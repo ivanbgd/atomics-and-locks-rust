@@ -1,11 +1,8 @@
-//! [A Minimal Implementation](https://marabos.nl/atomics/building-spinlock.html#a-minimal-implementation)
+//! # Chapter 4: Building Our Own Spin Lock
 //!
-//! Improved.
-//!
-//! Our spinlock contains a generic value.
-//!
-//! [`UnsafeCell`] is required for interior mutability.
+//! https://marabos.nl/atomics/building-spinlock.html
 
+use std::ops::{Deref, DerefMut};
 use std::thread::JoinHandle;
 use std::{
     cell::UnsafeCell,
@@ -18,7 +15,8 @@ use std::{
 
 pub struct SpinLock<T> {
     locked: AtomicBool,
-    pub value: UnsafeCell<T>,
+    // [`UnsafeCell`] is required for interior mutability.
+    value: UnsafeCell<T>,
 }
 
 impl<T> SpinLock<T> {
@@ -29,9 +27,8 @@ impl<T> SpinLock<T> {
         }
     }
 
-    pub fn lock(&self) {
+    pub fn lock(&self) -> SpinLockGuard<'_, T> {
         // Works incorrectly if we use `Relaxed` instead of `Acquire` for the success case.
-        // SAFETY: Acquire/Release
         while self
             .locked
             .compare_exchange_weak(false, true, Acquire, Relaxed)
@@ -39,17 +36,41 @@ impl<T> SpinLock<T> {
         {
             std::hint::spin_loop();
         }
+
+        SpinLockGuard { lock: self }
     }
 
     pub fn unlock(&self) {
         // Works incorrectly if we use `Relaxed` instead of `Release`.
-        // SAFETY: Acquire/Release
         self.locked.store(false, Release);
     }
 }
 
-// SAFETY: All interior mutations are synchronized properly (by spinlock and memory orderings).
-unsafe impl<T> Sync for SpinLock<T> {}
+// Safety: All interior mutations are synchronized properly (by spinlock and memory orderings).
+unsafe impl<T> Sync for SpinLock<T> where T: Send {}
+
+pub struct SpinLockGuard<'a, T> {
+    lock: &'a SpinLock<T>,
+}
+
+impl<T> Deref for SpinLockGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        // Safety: Existence of guard means that we have exclusively locked the lock.
+        unsafe { &*self.lock.value.get() }
+    }
+}
+
+impl<T> DerefMut for SpinLockGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // Safety: Existence of guard means that we have exclusively locked the lock.
+        unsafe { &mut *self.lock.value.get() }
+    }
+}
+
+unsafe impl<T> Send for SpinLockGuard<'_, T> where T: Send {}
+unsafe impl<T> Sync for SpinLockGuard<'_, T> where T: Sync {}
 
 pub fn run_example1() -> i32 {
     let counter = Arc::new(SpinLock::new(0));
@@ -57,20 +78,21 @@ pub fn run_example1() -> i32 {
     thread::scope(|s| {
         let counter1 = Arc::clone(&counter);
         s.spawn(move || {
-            counter1.lock();
-            unsafe { *counter1.value.get() += 1 };
+            let mut guard = counter1.lock();
+            *guard += 1;
             counter1.unlock();
         });
 
         let counter2 = Arc::clone(&counter);
         s.spawn(move || {
-            counter2.lock();
-            unsafe { *counter2.value.get() += 1 };
+            let mut guard = counter2.lock();
+            *guard += 1;
             counter2.unlock();
         });
     });
 
-    let result = unsafe { *counter.value.get() };
+    let result = *counter.lock();
+    counter.unlock();
     assert_eq!(2, result);
     println!("Total 1: {}", result);
 
@@ -97,7 +119,8 @@ pub fn run_example2() -> i32 {
         h.join().unwrap();
     }
 
-    let result = unsafe { *counter.value.get() };
+    let result = *counter.lock();
+    counter.unlock();
     assert_eq!(4 * 1_000_000, result);
     println!("Total 2: {}", result);
 
