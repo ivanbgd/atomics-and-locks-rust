@@ -12,18 +12,14 @@ use std::{
 
 pub struct SpinLock {
     locked: AtomicBool,
-}
-
-impl Default for SpinLock {
-    fn default() -> Self {
-        Self::new()
-    }
+    pub value: UnsafeCell<usize>,
 }
 
 impl SpinLock {
-    pub const fn new() -> Self {
+    pub const fn new(value: usize) -> Self {
         Self {
             locked: AtomicBool::new(false),
+            value: UnsafeCell::new(value),
         }
     }
 
@@ -42,33 +38,24 @@ impl SpinLock {
     }
 }
 
-struct SharedCounter {
-    lock: SpinLock,
-    value: UnsafeCell<usize>,
-}
-
-unsafe impl Sync for SharedCounter {}
+unsafe impl Sync for SpinLock {}
 
 pub fn run_example1() {
-    let counter = SharedCounter {
-        lock: SpinLock::new(),
-        value: UnsafeCell::new(0),
-    };
-    let counter = Arc::new(counter);
+    let counter = Arc::new(SpinLock::new(0));
 
     thread::scope(|s| {
         let counter1 = Arc::clone(&counter);
         s.spawn(move || {
-            counter1.lock.lock();
+            counter1.lock();
             unsafe { *counter1.value.get() += 1 };
-            counter1.lock.unlock();
+            counter1.unlock();
         });
 
         let counter2 = Arc::clone(&counter);
         s.spawn(move || {
-            counter2.lock.lock();
+            counter2.lock();
             unsafe { *counter2.value.get() += 1 };
-            counter2.lock.unlock();
+            counter2.unlock();
         });
     });
 
@@ -77,21 +64,17 @@ pub fn run_example1() {
 }
 
 pub fn run_example2() {
-    let counter = SharedCounter {
-        lock: SpinLock::new(),
-        value: UnsafeCell::new(0),
-    };
-    let counter = Arc::new(counter);
+    let counter = Arc::new(SpinLock::new(0));
 
     let handles: [JoinHandle<()>; 4] = std::array::from_fn(|_| {
         let counter = Arc::clone(&counter);
         thread::spawn(move || {
             for _ in 0..1_000_000 {
-                counter.lock.lock();
+                counter.lock();
                 unsafe {
                     *counter.value.get() += 1;
                 }
-                counter.lock.unlock();
+                counter.unlock();
             }
         })
     });
