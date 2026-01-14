@@ -39,11 +39,6 @@ impl<T> SpinLock<T> {
 
         SpinLockGuard { lock: self }
     }
-
-    pub fn unlock(&self) {
-        // Works incorrectly if we use `Relaxed` instead of `Release`.
-        self.locked.store(false, Release);
-    }
 }
 
 // Safety: All interior mutations are synchronized properly (by spinlock and memory orderings).
@@ -51,6 +46,13 @@ unsafe impl<T> Sync for SpinLock<T> where T: Send {}
 
 pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
+}
+
+impl<T> Drop for SpinLockGuard<'_, T> {
+    fn drop(&mut self) {
+        // Might work incorrectly if we use `Relaxed` instead of `Release`.
+        self.lock.locked.store(false, Release);
+    }
 }
 
 impl<T> Deref for SpinLockGuard<'_, T> {
@@ -80,19 +82,15 @@ pub fn run_example1() -> i32 {
         s.spawn(move || {
             let mut guard = counter1.lock();
             *guard += 1;
-            counter1.unlock();
         });
 
         let counter2 = Arc::clone(&counter);
         s.spawn(move || {
-            let mut guard = counter2.lock();
-            *guard += 1;
-            counter2.unlock();
+            *counter2.lock() += 1;
         });
     });
 
     let result = *counter.lock();
-    counter.unlock();
     assert_eq!(2, result);
     println!("Total 1: {}", result);
 
@@ -106,11 +104,7 @@ pub fn run_example2() -> i32 {
         let counter = Arc::clone(&counter);
         thread::spawn(move || {
             for _ in 0..1_000_000 {
-                counter.lock();
-                unsafe {
-                    *counter.value.get() += 1;
-                }
-                counter.unlock();
+                *counter.lock() += 1;
             }
         })
     });
@@ -120,7 +114,6 @@ pub fn run_example2() -> i32 {
     }
 
     let result = *counter.lock();
-    counter.unlock();
     assert_eq!(4 * 1_000_000, result);
     println!("Total 2: {}", result);
 
@@ -139,5 +132,25 @@ mod tests {
     #[test]
     fn test_2() {
         assert_eq!(4 * 1_000_000, run_example2());
+    }
+
+    #[test]
+    fn test_3() {
+        let vec = SpinLock::new(Vec::new());
+
+        thread::scope(|s| {
+            s.spawn(|| vec.lock().push(1));
+        });
+
+        thread::scope(|s| {
+            s.spawn(|| {
+                let mut guard = vec.lock();
+                guard.push(2);
+                guard.push(2);
+            });
+        });
+
+        let guard = vec.lock();
+        assert!(guard.as_slice() == [1, 2, 2] || guard.as_slice() == [2, 2, 1]);
     }
 }
