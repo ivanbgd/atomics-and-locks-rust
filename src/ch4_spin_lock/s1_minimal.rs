@@ -1,5 +1,6 @@
 //! [A Minimal Implementation](https://marabos.nl/atomics/building-spinlock.html#a-minimal-implementation)
 
+use std::thread::JoinHandle;
 use std::{
     cell::UnsafeCell,
     sync::{
@@ -48,7 +49,7 @@ struct SharedCounter {
 
 unsafe impl Sync for SharedCounter {}
 
-pub fn run_example() {
+pub fn run_example1() {
     let counter = SharedCounter {
         lock: SpinLock::new(),
         value: UnsafeCell::new(0),
@@ -71,5 +72,34 @@ pub fn run_example() {
         });
     });
 
-    println!("{}", unsafe { *counter.value.get() });
+    assert_eq!(2, unsafe { *counter.value.get() });
+    println!("Total 1: {}", unsafe { *counter.value.get() });
+}
+
+pub fn run_example2() {
+    let counter = SharedCounter {
+        lock: SpinLock::new(),
+        value: UnsafeCell::new(0),
+    };
+    let counter = Arc::new(counter);
+
+    let handles: [JoinHandle<()>; 4] = std::array::from_fn(|_| {
+        let counter = Arc::clone(&counter);
+        thread::spawn(move || {
+            for _ in 0..1_000_000 {
+                counter.lock.lock();
+                unsafe {
+                    *counter.value.get() += 1;
+                }
+                counter.lock.unlock();
+            }
+        })
+    });
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    assert_eq!(4 * 1_000_000, unsafe { *counter.value.get() });
+    println!("Total 2: {}", unsafe { *counter.value.get() });
 }
