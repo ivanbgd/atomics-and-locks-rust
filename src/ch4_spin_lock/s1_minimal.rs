@@ -1,6 +1,10 @@
 //! [A Minimal Implementation](https://marabos.nl/atomics/building-spinlock.html#a-minimal-implementation)
 //!
 //! Improved.
+//!
+//! Our spinlock contains a generic value.
+//!
+//! [`UnsafeCell`] is required for interior mutability.
 
 use std::thread::JoinHandle;
 use std::{
@@ -26,6 +30,8 @@ impl<T> SpinLock<T> {
     }
 
     pub fn lock(&self) {
+        // Works incorrectly if we use `Relaxed` instead of `Acquire` for the success case.
+        // SAFETY: Acquire/Release
         while self
             .locked
             .compare_exchange_weak(false, true, Acquire, Relaxed)
@@ -36,10 +42,13 @@ impl<T> SpinLock<T> {
     }
 
     pub fn unlock(&self) {
+        // Works incorrectly if we use `Relaxed` instead of `Release`.
+        // SAFETY: Acquire/Release
         self.locked.store(false, Release);
     }
 }
 
+// SAFETY: All interior mutations are synchronized properly (by spinlock and memory orderings).
 unsafe impl<T> Sync for SpinLock<T> {}
 
 pub fn run_example1() -> i32 {
