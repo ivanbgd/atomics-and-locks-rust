@@ -55,3 +55,29 @@ pub fn run_example() {
     println!("{:?}", r1);
     println!("{:?}", r2);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_1() {
+        let t1 = thread::spawn(|| {
+            let r = get_data(3, 4);
+            println!("{:?}", r);
+            r
+        });
+        let t2 = thread::spawn(|| {
+            let r = get_data(5, 6);
+            println!("{:?}", r);
+            r
+        });
+
+        let r1 = t1.join().unwrap();
+        let r2 = t2.join().unwrap();
+        assert!(
+            ((r1.x, r1.y) == (3, 4) && (r2.x, r2.y) == (3, 4))
+                || ((r1.x, r1.y) == (5, 6) && (r2.x, r2.y) == (5, 6))
+        );
+    }
+}

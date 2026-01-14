@@ -75,18 +75,16 @@ unsafe impl<T> Send for SpinLockGuard<'_, T> where T: Send {}
 unsafe impl<T> Sync for SpinLockGuard<'_, T> where T: Sync {}
 
 pub fn run_example1() -> i32 {
-    let counter = Arc::new(SpinLock::new(0));
+    let counter = SpinLock::new(0);
 
     thread::scope(|s| {
-        let counter1 = Arc::clone(&counter);
-        s.spawn(move || {
-            let mut guard = counter1.lock();
+        s.spawn(|| {
+            let mut guard = counter.lock();
             *guard += 1;
         });
 
-        let counter2 = Arc::clone(&counter);
-        s.spawn(move || {
-            *counter2.lock() += 1;
+        s.spawn(|| {
+            *counter.lock() += 1;
         });
     });
 
