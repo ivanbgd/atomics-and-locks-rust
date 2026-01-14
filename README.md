@@ -3,3 +3,10 @@
 ### Low-Level Concurrency in Practice
 
 https://marabos.nl/atomics/
+
+## Running
+
+```shell
+cargo run
+cargo run --release
+```

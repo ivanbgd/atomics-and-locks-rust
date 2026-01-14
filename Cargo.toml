@@ -1,6 +1,25 @@
 [package]
 name = "atomics-and-locks-rust"
 version = "0.1.0"
+authors = ["Ivan Lazarević"]
+repository = "https://github.com/ivanbgd/atomics-and-locks-rust"
+description = "Rust Atomics and Locks"
+keywords = ["algorithms", "data-structures", "concurrency"]
+categories = ["algorithms", "data-structures"]
+license = "MIT"
+readme = "README.md"
 edition = "2024"
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "atomics-and-locks-rust"
+path = "src/main.rs"
+
 [dependencies]
+
+[profile.release]
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
