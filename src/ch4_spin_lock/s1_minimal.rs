@@ -1,4 +1,6 @@
 //! [A Minimal Implementation](https://marabos.nl/atomics/building-spinlock.html#a-minimal-implementation)
+//!
+//! Improved.
 
 use std::thread::JoinHandle;
 use std::{
@@ -10,13 +12,13 @@ use std::{
     thread,
 };
 
-pub struct SpinLock {
+pub struct SpinLock<T> {
     locked: AtomicBool,
-    pub value: UnsafeCell<usize>,
+    pub value: UnsafeCell<T>,
 }
 
-impl SpinLock {
-    pub const fn new(value: usize) -> Self {
+impl<T> SpinLock<T> {
+    pub const fn new(value: T) -> Self {
         Self {
             locked: AtomicBool::new(false),
             value: UnsafeCell::new(value),
@@ -38,9 +40,9 @@ impl SpinLock {
     }
 }
 
-unsafe impl Sync for SpinLock {}
+unsafe impl<T> Sync for SpinLock<T> {}
 
-pub fn run_example1() {
+pub fn run_example1() -> i32 {
     let counter = Arc::new(SpinLock::new(0));
 
     thread::scope(|s| {
@@ -59,11 +61,14 @@ pub fn run_example1() {
         });
     });
 
-    assert_eq!(2, unsafe { *counter.value.get() });
-    println!("Total 1: {}", unsafe { *counter.value.get() });
+    let result = unsafe { *counter.value.get() };
+    assert_eq!(2, result);
+    println!("Total 1: {}", result);
+
+    result
 }
 
-pub fn run_example2() {
+pub fn run_example2() -> i32 {
     let counter = Arc::new(SpinLock::new(0));
 
     let handles: [JoinHandle<()>; 4] = std::array::from_fn(|_| {
@@ -83,6 +88,24 @@ pub fn run_example2() {
         h.join().unwrap();
     }
 
-    assert_eq!(4 * 1_000_000, unsafe { *counter.value.get() });
-    println!("Total 2: {}", unsafe { *counter.value.get() });
+    let result = unsafe { *counter.value.get() };
+    assert_eq!(4 * 1_000_000, result);
+    println!("Total 2: {}", result);
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_1() {
+        assert_eq!(2, run_example1());
+    }
+
+    #[test]
+    fn test_2() {
+        assert_eq!(4 * 1_000_000, run_example2());
+    }
 }

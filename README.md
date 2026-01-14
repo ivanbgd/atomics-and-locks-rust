@@ -10,3 +10,10 @@ https://marabos.nl/atomics/
 cargo run
 cargo run --release
 ```
+
+## Testing
+
+```shell
+cargo test
+cargo test --release
+```
