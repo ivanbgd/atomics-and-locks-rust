@@ -3,3 +3,4 @@
 //! https://marabos.nl/atomics/building-channels.html
 
 pub mod s1_simple;
+pub mod s2_unsafe;

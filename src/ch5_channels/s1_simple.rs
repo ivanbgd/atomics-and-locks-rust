@@ -10,7 +10,7 @@ use std::time::Duration;
 
 /// A simple MPMC channel implemented using [`Mutex`], [`VecDeque`] and [`Condvar`]
 /// with non-blocking send and blocking receive.
-#[derive(Default, Debug)]
+#[derive(Debug, Default)]
 pub struct SimpleChannel<T> {
     queue: Mutex<VecDeque<T>>,
     item_ready: Condvar,
