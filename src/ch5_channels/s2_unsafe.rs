@@ -76,6 +76,8 @@ pub fn run_example1() {
                     println!("{message}");
                     assert_eq!("hello world 1!", message);
                     break;
+                } else {
+                    thread::yield_now();
                 }
             }
         });
@@ -114,7 +116,7 @@ pub fn run_example2() {
 
 /// There's one sender thread (child) and one receiver thread (also child), and one one-shot channel between them.
 ///
-/// I don't think this is a good use pattern.
+/// I don't think this is a good usage pattern.
 pub fn run_example3() {
     let channel = Channel::new();
     let channel = Arc::new(channel);
