@@ -1,5 +1,5 @@
-use atomics_and_locks_rust::ch1_condvar::run_example;
+use atomics_and_locks_rust::ch5_channels::s1_simple::*;
 
 fn main() {
-    run_example();
+    run_example2();
 }

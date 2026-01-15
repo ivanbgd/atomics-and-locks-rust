@@ -19,11 +19,12 @@ pub fn run_example() {
                     if let Some(item) = guard.pop_front() {
                         break item;
                     } else {
+                        // `wait()` blocks the current thread until this condition variable receives a notification.
                         guard = not_empty.wait(guard).unwrap();
                     }
                 };
                 drop(guard);
-                eprintln!("{item}");
+                println!("{item}");
             }
         });
 
