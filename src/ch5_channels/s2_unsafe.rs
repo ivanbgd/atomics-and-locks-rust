@@ -2,7 +2,7 @@
 //!
 //! https://marabos.nl/atomics/building-channels.html#an-unsafe-one-shot-channel
 //!
-//! This variant has non-blocking receive. User needs to block if they wish.
+//! Doesn’t provide a blocking interface (has non-blocking receive). User needs to block if they wish.
 
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;

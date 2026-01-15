@@ -1,7 +1,5 @@
-use atomics_and_locks_rust::ch5_channels::s2_unsafe::*;
+use atomics_and_locks_rust::ch5_channels::s3_checks::*;
 
 fn main() {
-    run_example1();
-    run_example2();
-    run_example3();
+    run_example();
 }
