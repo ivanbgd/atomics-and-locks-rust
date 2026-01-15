@@ -43,19 +43,17 @@ impl<T> SimpleChannel<T> {
     }
 }
 
-/// Runs infinitely long.
+/// Runs infinitely long. Uses [`thread::scoped::scope`].
 pub fn run_example1() {
     let ch = SimpleChannel::new();
 
     thread::scope(|s| {
-        // for i in 0..1 {
         s.spawn(|| {
             loop {
                 let message = ch.recv();
                 println!(": {message}");
             }
         });
-        // }
 
         for i in 0.. {
             ch.send(i);
@@ -64,14 +62,14 @@ pub fn run_example1() {
     });
 }
 
-/// Returns after four iterations.
+/// Returns after four iterations. Uses [`thread::spawn`].
 ///
 /// If we had joined the thread, we'd be waiting infinitely long for it to finish.
 pub fn run_example2() {
     let ch = SimpleChannel::new();
     let ch = Arc::new(ch);
-    let chc = Arc::clone(&ch);
 
+    let chc = Arc::clone(&ch);
     thread::spawn(move || {
         loop {
             let message = chc.recv();
@@ -80,6 +78,58 @@ pub fn run_example2() {
     });
 
     for i in 0..4 {
+        ch.send(i);
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Four receiver threads run indefinitely.
+///
+/// The main thread is the sole sender, and it also runs indefinitely.
+///
+///  Uses [`thread::scoped::scope`].
+pub fn run_example3() {
+    let ch = SimpleChannel::new();
+    let ch = Arc::new(ch);
+
+    thread::scope(|s| {
+        for i in 0..4 {
+            let ch = Arc::clone(&ch);
+            s.spawn(move || {
+                loop {
+                    let message = ch.recv();
+                    println!("{i}: {message}");
+                }
+            });
+        }
+
+        for i in 0.. {
+            ch.send(i);
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+/// Four receiver threads run indefinitely.
+///
+/// The main thread is the sole sender, and it also runs indefinitely.
+///
+///  Uses [`thread::spawn`].
+pub fn run_example4() {
+    let ch = SimpleChannel::new();
+    let ch = Arc::new(ch);
+
+    for i in 0..4 {
+        let ch = Arc::clone(&ch);
+        thread::spawn(move || {
+            loop {
+                let message = ch.recv();
+                println!("{i}: {message}");
+            }
+        });
+    }
+
+    for i in 0.. {
         ch.send(i);
         thread::sleep(Duration::from_secs(1));
     }
