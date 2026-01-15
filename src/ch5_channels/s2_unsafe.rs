@@ -8,6 +8,7 @@ use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Release};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -109,4 +110,37 @@ pub fn run_example2() {
     let message = unsafe { channel.recv() };
     println!("{message}");
     assert_eq!("hello world 2!", message);
+}
+
+/// There's one sender thread (child) and one receiver thread (also child), and one one-shot channel between them.
+///
+/// I don't think this is a good use pattern.
+pub fn run_example3() {
+    let channel = Channel::new();
+    let channel = Arc::new(channel);
+    let channel_clone = Arc::clone(&channel);
+
+    let t = thread::current();
+
+    let snd = thread::spawn(move || {
+        thread::sleep(Duration::from_secs(1));
+        unsafe {
+            channel.send("hello world 3!");
+        }
+        t.unpark();
+    });
+
+    snd.join().unwrap();
+
+    let rcv = thread::spawn(move || {
+        while !channel_clone.is_ready() {
+            thread::park();
+        }
+
+        let message = unsafe { channel_clone.recv() };
+        println!("{message}");
+        assert_eq!("hello world 3!", message);
+    });
+
+    rcv.join().unwrap();
 }
