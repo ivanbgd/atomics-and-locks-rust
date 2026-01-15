@@ -65,7 +65,7 @@ impl<T> Channel<T> {
 ///
 /// Three sender threads.
 ///
-/// This runs indefinitely and without a one-second pause. I'm not sure about usage.
+/// This runs only once - with only one sender! I'm not sure about usage.
 ///
 ///  Uses [`thread::scoped::scope`].
 pub fn run_example() {
@@ -80,9 +80,8 @@ pub fn run_example() {
                     if ch.is_ready() {
                         let message = unsafe { ch.recv() };
                         println!("{rcv}: {message:?}");
+                        break;
                     }
-                    // With this sleep here, it has a one-second pause, but output is not quite correct.
-                    thread::sleep(Duration::from_secs(1));
                 }
             });
         }
