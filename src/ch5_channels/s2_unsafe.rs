@@ -9,6 +9,7 @@ use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Release};
 use std::thread;
+use std::time::Duration;
 
 /// One-shot channel
 #[derive(Debug)]
@@ -62,7 +63,7 @@ impl<T> Channel<T> {
     }
 }
 
-/// There's one sender thread and one receiver thread, and one one-shot channel between them.
+/// There's one sender thread (child) and one receiver thread (also child), and one one-shot channel between them.
 pub fn run_example1() {
     let channel = Channel::new();
 
@@ -79,12 +80,13 @@ pub fn run_example1() {
         });
 
         s.spawn(|| unsafe {
+            thread::sleep(Duration::from_secs(1));
             channel.send("hello world 1!");
         });
     });
 }
 
-/// There's one sender thread and one receiver thread, and one one-shot channel between them.
+/// There's one sender thread (child) and one receiver thread (parent/main), and one one-shot channel between them.
 pub fn run_example2() {
     let channel = Channel::new();
 
@@ -92,18 +94,19 @@ pub fn run_example2() {
 
     thread::scope(|s| {
         s.spawn(|| {
+            thread::sleep(Duration::from_secs(1));
             unsafe {
                 channel.send("hello world 2!");
             }
             t.unpark();
         });
-
-        while !channel.is_ready() {
-            thread::park();
-        }
-
-        let message = unsafe { channel.recv() };
-        println!("{message}");
-        assert_eq!("hello world 2!", message);
     });
+
+    while !channel.is_ready() {
+        thread::park();
+    }
+
+    let message = unsafe { channel.recv() };
+    println!("{message}");
+    assert_eq!("hello world 2!", message);
 }
