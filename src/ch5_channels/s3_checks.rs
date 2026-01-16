@@ -93,6 +93,8 @@ pub fn run_example() {
         });
     });
 
+    // We have to block manually waiting for a message, as the `Channel::recv()` method is non-blocking.
+    // We park the thread to achieve that.
     while !channel.is_ready() {
         thread::park();
     }

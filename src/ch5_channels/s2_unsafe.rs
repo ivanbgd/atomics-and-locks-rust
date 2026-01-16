@@ -16,6 +16,7 @@ use std::time::Duration;
 #[derive(Debug)]
 pub struct Channel<T> {
     /// Message item
+    // `MaybeUninit` can be considered like an `Option`.
     message: UnsafeCell<MaybeUninit<T>>,
     /// Has another `send` already finished?
     ready: AtomicBool,
