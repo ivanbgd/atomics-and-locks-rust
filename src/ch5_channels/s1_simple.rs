@@ -1,6 +1,8 @@
 //! # A Simple Mutex-Based Channel
 //!
 //! https://marabos.nl/atomics/building-channels.html#a-simple-mutex-based-channel
+//!
+//! Non-blocking send with blocking receive
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};

@@ -1,6 +1,22 @@
 //! # Safety Through Types
 //!
 //! https://marabos.nl/atomics/building-channels.html#safety-through-types
+//!
+//! Very convenient to use, at the cost of some performance, as it has to allocate memory.
+//!
+//! The runtime overhead comes from the split ownership of Channel between Sender and Receiver,
+//! because of which we have to use [`Arc`].
+//!
+//! On the other hand, this variant catches mistakes at compile time.
+//! Namely, [`Sender::send`] and [`Receiver::recv`] take ownership of `self`,
+//! so the user cannot call them twice.
+//!
+//! This improves convenience of use for the user.
+//!
+//! This also improves performance, as it results in a reduced number of runtime checks
+//! for things that are now statically guaranteed.
+//!
+//! Non-blocking send & non-blocking receive. User needs to block if they wish.
 
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
