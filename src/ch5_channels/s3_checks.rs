@@ -31,6 +31,7 @@ impl<T> Default for Channel<T> {
 }
 
 impl<T> Channel<T> {
+    /// New channel
     pub const fn new() -> Self {
         Self {
             message: UnsafeCell::new(MaybeUninit::uninit()),
@@ -88,7 +89,7 @@ pub fn run_example() {
     thread::scope(|s| {
         s.spawn(|| {
             thread::sleep(Duration::from_secs(1));
-            channel.send("hello world!");
+            channel.send("hello checks world!");
             t.unpark();
         });
     });
@@ -101,5 +102,5 @@ pub fn run_example() {
 
     let message = channel.recv();
     println!("{message}");
-    assert_eq!("hello world!", message);
+    assert_eq!("hello checks world!", message);
 }

@@ -31,6 +31,7 @@ impl<T> Default for Channel<T> {
 }
 
 impl<T> Channel<T> {
+    /// New channel
     pub const fn new() -> Self {
         Self {
             message: UnsafeCell::new(MaybeUninit::uninit()),

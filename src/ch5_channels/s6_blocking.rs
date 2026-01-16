@@ -1,24 +1,26 @@
-//! # Borrowing to Avoid Allocation
+//! # Blocking
 //!
-//! https://marabos.nl/atomics/building-channels.html#borrowing-to-avoid-allocation
+//! https://marabos.nl/atomics/building-channels.html#blocking
 //!
-//! Slightly more performant than the previous version (Safety through types: the Arc-based version),
-//! but also a little less convenient to use.
+//! Has a blocking interface - for receiving.
 //!
-//! In order to optimize for efficiency, we trade some convenience for performance
-//! by making the user responsible for the shared [`Channel`] object.
+//! It is more convenient to use, as blocking is now done inside [`Receiver::recv()`].
+//! This means that a user does not have to block manually anymore, when waiting for messages.
 //!
-//! The reduction in convenience compared to the Arc-based version is minimal,
-//! as it requires only one more line of code when using it, to create a channel.
+//! Some flexibility has been lost as now only the thread that called [`Channel::split()`]
+//! can receive data through [`Receiver::recv()`].
 
 use std::cell::UnsafeCell;
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Release};
 use std::thread;
 use std::time::Duration;
 
 /// One-shot channel
+///
+/// Only the thread that calls [`Channel::split()`] may call [`Receiver::recv()`].
 #[derive(Debug)]
 pub struct Channel<T> {
     /// Message item
@@ -38,7 +40,9 @@ impl<T> Default for Channel<T> {
 impl<T> Drop for Channel<T> {
     fn drop(&mut self) {
         if *self.ready.get_mut() {
-            unsafe { self.message.get_mut().assume_init_drop() }
+            unsafe {
+                self.message.get_mut().assume_init_drop();
+            }
         }
     }
 }
@@ -53,18 +57,31 @@ impl<T> Channel<T> {
     }
 
     /// Returns sending and receiving sides of the channel.
+    ///
+    /// Only the thread that calls [`Channel::split()`] may call [`Receiver::recv()`].
     pub fn split<'a>(&'a mut self) -> (Sender<'a, T>, Receiver<'a, T>) {
         *self = Self::new();
-        (Sender { channel: self }, Receiver { channel: self })
+        let sender = Sender {
+            channel: self,
+            receiving_thread: thread::current(),
+        };
+        let receiver = Receiver {
+            channel: self,
+            _no_send: PhantomData,
+        };
+        (sender, receiver)
     }
 }
 
 pub struct Sender<'a, T> {
     channel: &'a Channel<T>,
+    receiving_thread: thread::Thread,
 }
 
 impl<T> Sender<'_, T> {
     /// Non-blocking send
+    ///
+    /// Unblocks the receiving thread after sending the message.
     ///
     /// Never panics.
     pub fn send(self, message: T) {
@@ -72,51 +89,42 @@ impl<T> Sender<'_, T> {
             (*self.channel.message.get()).write(message);
         }
         self.channel.ready.store(true, Release);
+        self.receiving_thread.unpark();
     }
 }
 
 pub struct Receiver<'a, T> {
     channel: &'a Channel<T>,
+    _no_send: PhantomData<*const ()>,
 }
 
 impl<T> Receiver<'_, T> {
-    /// Returns whether a message is stored (available) in the channel.
-    pub fn is_ready(&self) -> bool {
-        self.channel.ready.load(Relaxed)
-    }
-
-    /// Non-blocking receive
+    /// Blocking receive
     ///
-    /// Panics if no message is available yet.
+    /// Only the thread that calls [`Channel::split()`] may call [`Receiver::recv()`].
     ///
-    /// Tip: Use [`Channel::is_ready`] to check first.
+    /// Never panics.
     pub fn recv(self) -> T {
-        if !self.channel.ready.swap(false, Acquire) {
-            panic!("no message available");
+        while !self.channel.ready.swap(false, Acquire) {
+            thread::park();
         }
+
         unsafe { (*self.channel.message.get()).assume_init_read() }
     }
 }
 
 pub fn run_example() {
-    let mut channel = Channel::new();
+    let mut channel = Channel::<&str>::new();
     let (tx, rx) = channel.split();
-
-    let t = thread::current();
 
     thread::scope(|s| {
         s.spawn(|| {
             thread::sleep(Duration::from_secs(1));
-            tx.send("Hello, borrowing world!");
-            t.unpark();
+            tx.send("Hello, blocking world!");
         });
     });
 
-    while !rx.is_ready() {
-        thread::park();
-    }
-
     let msg = rx.recv();
     println!("{msg}");
-    assert_eq!("Hello, borrowing world!", msg);
+    assert_eq!("Hello, blocking world!", msg);
 }

@@ -19,6 +19,7 @@ pub struct SimpleChannel<T> {
 }
 
 impl<T> SimpleChannel<T> {
+    /// New channel
     pub const fn new() -> Self {
         Self {
             queue: Mutex::new(VecDeque::new()),

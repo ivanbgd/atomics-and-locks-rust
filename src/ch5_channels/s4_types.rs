@@ -109,7 +109,7 @@ pub fn run_example() {
     thread::scope(|s| {
         s.spawn(|| {
             thread::sleep(Duration::from_secs(1));
-            let message = "Hello, world!";
+            let message = "Hello, types world!";
             sender.send(message);
             t.unpark();
         });
@@ -123,5 +123,5 @@ pub fn run_example() {
 
     let message = receiver.recv();
     println!("{message}");
-    assert_eq!("Hello, world!", message);
+    assert_eq!("Hello, types world!", message);
 }
