@@ -3,3 +3,4 @@
 //! https://marabos.nl/atomics/building-arc.html
 
 pub mod s1_basic;
+pub mod s2_weak;

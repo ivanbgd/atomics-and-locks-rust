@@ -22,6 +22,7 @@ struct ArcInner<T> {
     ref_count: AtomicUsize,
 }
 
+#[derive(Debug)]
 pub struct Arc<T> {
     ptr: NonNull<ArcInner<T>>,
 }
@@ -40,6 +41,7 @@ impl<T> Arc<T> {
     }
 
     fn get_inner(&self) -> &ArcInner<T> {
+        // SAFETY: Pointer always points to valid `ArcInner<T>` as long as the `Arc` object exists.
         unsafe { self.ptr.as_ref() }
     }
 

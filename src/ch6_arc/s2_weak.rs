@@ -1,0 +1,286 @@
+//! # Weak Pointers
+//!
+//! https://marabos.nl/atomics/building-arc.html#weak-pointers
+//!
+//! Weak pointers help break cycles and can also keep a reference to the allocation
+//! inside `Arc` around if there is currently no `Arc` (strong reference) around.
+//!
+//! A weak pointer does not prevent the value stored in the allocation from being dropped.
+//! It will be dropped if the strong count goes down to zero.
+//!
+//! Circular (mutual) references are possible in case of tree data structure, for example,
+//! where a parent node points to its children nodes, and children nodes point to their parent node.
+//! Without weak references, mutual strong references would prevent `Arc` from being dropped.
+//! So, parents can hold strong references to children, and children can hold weak references to parents.
+
+use std::cell::UnsafeCell;
+use std::ops::Deref;
+use std::ptr::NonNull;
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::{fence, AtomicBool, AtomicUsize};
+use std::thread;
+
+struct ArcInner<T> {
+    /// The data. `None` if there's only one weak pointer left.
+    data: UnsafeCell<Option<T>>,
+    /// Number of `Arc`s.
+    strong_count: AtomicUsize,
+    /// Total number of `Arc`s and `Weak`s combined.
+    total_count: AtomicUsize,
+}
+
+#[derive(Debug)]
+pub struct Weak<T> {
+    ptr: NonNull<ArcInner<T>>,
+}
+
+#[derive(Debug)]
+pub struct Arc<T> {
+    weak: Weak<T>,
+}
+
+unsafe impl<T: Send + Sync> Send for Weak<T> {}
+unsafe impl<T: Send + Sync> Sync for Weak<T> {}
+
+impl<T> Arc<T> {
+    pub fn new(data: T) -> Self {
+        let inner = ArcInner {
+            data: UnsafeCell::new(Some(data)),
+            strong_count: AtomicUsize::new(1),
+            total_count: AtomicUsize::new(1),
+        };
+        let ptr = NonNull::from(Box::leak(Box::new(inner)));
+        let weak = Weak { ptr };
+
+        Self { weak }
+    }
+
+    pub fn get_mut(arc: &mut Self) -> Option<&mut T> {
+        if arc.weak.get_inner().total_count.load(Relaxed) == 1 {
+            fence(Acquire);
+
+            // SAFETY: This is the only strong reference and we hold it. This is the only Arc.
+            // Total reference count is one, and there are no weak references.
+            let inner = unsafe { arc.weak.ptr.as_mut() };
+            let option = inner.data.get_mut();
+            // We know that the data is still available as we hold Arc to it, so this won't panic.
+            let data = option.as_mut().expect("expected some data");
+
+            Some(data)
+        } else {
+            None
+        }
+    }
+
+    pub fn downgrade(arc: &Self) -> Weak<T> {
+        arc.weak.clone()
+    }
+}
+
+impl<T> Deref for Arc<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        let ptr = self.weak.get_inner().data.get();
+        // SAFETY: Since there is an Arc to the data, the data exists and can be shared.
+        unsafe { (*ptr).as_ref().expect("expected some value") }
+    }
+}
+
+impl<T> Weak<T> {
+    fn get_inner(&self) -> &ArcInner<T> {
+        // SAFETY: Pointer always points to valid `ArcInner<T>` as long as the `Weak` object exists.
+        unsafe { self.ptr.as_ref() }
+    }
+
+    pub fn upgrade(&self) -> Option<Arc<T>> {
+        let mut cnt = self.get_inner().strong_count.load(Relaxed);
+        loop {
+            if cnt == 0 {
+                return None;
+            }
+
+            assert!(cnt < usize::MAX >> 1);
+
+            match self.get_inner().strong_count.compare_exchange_weak(
+                cnt,
+                cnt + 1,
+                Relaxed,
+                Relaxed,
+            ) {
+                Ok(_) => {
+                    return Some(Arc {
+                        weak: Self::clone(self),
+                    });
+                }
+                Err(e) => cnt = e,
+            }
+        }
+    }
+}
+
+impl<T> Clone for Weak<T> {
+    fn clone(&self) -> Self {
+        if self.get_inner().total_count.fetch_add(1, Relaxed) > usize::MAX >> 1 {
+            std::process::abort();
+        }
+
+        Self { ptr: self.ptr }
+    }
+}
+
+impl<T> Clone for Arc<T> {
+    fn clone(&self) -> Self {
+        let weak = Weak::clone(&self.weak);
+
+        if self.weak.get_inner().strong_count.fetch_add(1, Relaxed) > usize::MAX >> 1 {
+            std::process::abort();
+        }
+
+        Self { weak }
+    }
+}
+
+impl<T> Drop for Weak<T> {
+    fn drop(&mut self) {
+        if self.get_inner().total_count.fetch_sub(1, Release) == 1 {
+            fence(Acquire);
+
+            // SAFETY: This is the last total reference, so we can safely drop the object.
+            unsafe {
+                drop(Box::from_raw(self.ptr.as_ptr()));
+            }
+        }
+    }
+}
+
+impl<T> Drop for Arc<T> {
+    fn drop(&mut self) {
+        if self.weak.get_inner().strong_count.fetch_sub(1, Release) == 1 {
+            fence(Acquire);
+
+            let ptr = self.weak.get_inner().data.get();
+
+            // SAFETY: This is the last strong reference, so nothing else can access it.
+            unsafe {
+                *ptr = None;
+            }
+        }
+    }
+}
+
+/// Taken from the basic implementation of Arc, to validate that this new Arc can be used in the same way.
+///
+/// We changed AtomicUsize to AtomicBool.
+pub fn run_example_basic() {
+    static NUM_DROPS: AtomicBool = AtomicBool::new(false);
+
+    struct DetectDrop;
+
+    impl Drop for DetectDrop {
+        fn drop(&mut self) {
+            NUM_DROPS.store(true, Relaxed);
+        }
+    }
+
+    let arc = Arc::new(("hello", DetectDrop));
+    let arc_clone = Arc::clone(&arc);
+
+    let t = thread::spawn(move || {
+        assert_eq!("hello", arc_clone.0);
+        assert!(!NUM_DROPS.load(Relaxed));
+    });
+
+    assert!(!NUM_DROPS.load(Relaxed));
+    assert_eq!("hello", arc.0);
+
+    t.join().unwrap();
+    assert!(!NUM_DROPS.load(Relaxed));
+
+    drop(arc);
+    assert!(NUM_DROPS.load(Relaxed));
+}
+
+pub fn run_example_weak1() {
+    static NUM_DROPS: AtomicBool = AtomicBool::new(false);
+
+    struct DetectDrop;
+
+    impl Drop for DetectDrop {
+        fn drop(&mut self) {
+            NUM_DROPS.store(true, Relaxed);
+        }
+    }
+
+    let arc = Arc::new(("hello", DetectDrop));
+    let weak1 = Arc::downgrade(&arc);
+    let weak2 = Arc::downgrade(&arc);
+
+    let t = thread::spawn(move || {
+        // Weak pointer should be upgradeable at this point.
+        let strong1 = weak1.upgrade().unwrap();
+        assert_eq!("hello", strong1.0);
+        assert!(!NUM_DROPS.load(Relaxed));
+    });
+
+    assert!(!NUM_DROPS.load(Relaxed));
+    assert_eq!("hello", arc.0);
+
+    t.join().unwrap();
+
+    assert!(!NUM_DROPS.load(Relaxed));
+
+    // Weak pointer should be upgradeable at this point.
+    assert!(weak2.upgrade().is_some());
+    assert!(!NUM_DROPS.load(Relaxed));
+
+    drop(arc);
+
+    // The data should be dropped by now, and the weak pointer should no longer be upgradeable.
+    assert!(NUM_DROPS.load(Relaxed));
+    assert!(weak2.upgrade().is_none());
+}
+
+pub fn run_example_weak2() {
+    static NUM_DROPS: AtomicBool = AtomicBool::new(false);
+
+    struct DetectDrop;
+
+    impl Drop for DetectDrop {
+        fn drop(&mut self) {
+            NUM_DROPS.store(true, Relaxed);
+        }
+    }
+
+    let arc = Arc::new(("hello", DetectDrop));
+    let weak1 = Arc::downgrade(&arc);
+    let weak2 = Arc::downgrade(&arc);
+
+    let t = thread::spawn(move || {
+        // Weak pointer should be upgradeable at this point.
+        let strong1 = weak1.upgrade().unwrap();
+        assert_eq!("hello", strong1.0);
+        assert!(!NUM_DROPS.load(Relaxed));
+    });
+
+    assert!(!NUM_DROPS.load(Relaxed));
+    assert_eq!("hello", arc.0);
+
+    t.join().unwrap();
+
+    assert!(!NUM_DROPS.load(Relaxed));
+
+    // Weak pointer should be upgradeable at this point.
+    let strong2 = weak2.upgrade().unwrap();
+    assert_eq!("hello", strong2.0);
+    assert!(!NUM_DROPS.load(Relaxed));
+
+    drop(strong2);
+    assert!(!NUM_DROPS.load(Relaxed));
+
+    drop(weak2);
+    assert!(!NUM_DROPS.load(Relaxed));
+
+    drop(arc);
+    assert!(NUM_DROPS.load(Relaxed));
+}

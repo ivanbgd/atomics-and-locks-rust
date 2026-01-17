@@ -1,5 +1,7 @@
-use atomics_and_locks_rust::ch6_arc::s1_basic::*;
+use atomics_and_locks_rust::ch6_arc::s2_weak::*;
 
 fn main() {
-    run_example();
+    run_example_basic();
+    run_example_weak1();
+    run_example_weak2();
 }
