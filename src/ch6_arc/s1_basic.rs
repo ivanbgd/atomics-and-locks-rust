@@ -14,7 +14,7 @@ use std::ops::Deref;
 use std::process::abort;
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use std::sync::atomic::{fence, AtomicUsize};
+use std::sync::atomic::{fence, AtomicBool, AtomicUsize};
 use std::thread;
 
 struct ArcInner<T> {
@@ -87,6 +87,7 @@ impl<T> Drop for Arc<T> {
 }
 
 pub fn run_example() {
+    // This could be AtomicBool instead.
     static NUM_DROPS: AtomicUsize = AtomicUsize::new(0);
 
     struct DetectDrop;
@@ -117,4 +118,43 @@ pub fn run_example() {
     drop(arc);
 
     assert_eq!(1, NUM_DROPS.load(Relaxed));
+}
+
+/// We are not proving anything in this test function, i.e., that `dropped` was set to `true`.
+/// Namely, we can't prove it, because the flag is contained within the `DetectDrop` struct, so we can't
+/// access the flag after dropping the last instance (manually, in the main thread).
+pub fn _run_example() {
+    struct DetectDrop {
+        dropped: AtomicBool,
+    }
+
+    impl Drop for DetectDrop {
+        fn drop(&mut self) {
+            self.dropped.store(true, Relaxed);
+        }
+    }
+
+    let arc = Arc::new((
+        "hello",
+        DetectDrop {
+            dropped: AtomicBool::new(false),
+        },
+    ));
+    // let arc_clone = arc.clone();
+    let arc_clone = Arc::clone(&arc);
+
+    let t = thread::spawn(move || {
+        assert_eq!("hello", arc_clone.0);
+        assert!(!arc_clone.1.dropped.load(Relaxed));
+    });
+
+    assert!(!arc.1.dropped.load(Relaxed));
+
+    assert_eq!("hello", arc.0);
+
+    t.join().unwrap();
+
+    assert!(!arc.1.dropped.load(Relaxed));
+
+    drop(arc);
 }
