@@ -76,7 +76,7 @@ impl<T> Receiver<T> {
         if !self.channel.ready.swap(false, Acquire) {
             panic!("no message available");
         }
-        // Safety: We've just checked (and reset) the ready flag.
+        // SAFETY: We've just checked (and reset) the ready flag.
         unsafe { (*self.channel.message.get()).assume_init_read() }
     }
 }

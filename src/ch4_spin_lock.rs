@@ -41,7 +41,7 @@ impl<T> SpinLock<T> {
     }
 }
 
-// Safety: All interior mutations are synchronized properly (by spinlock and memory orderings).
+// SAFETY: All interior mutations are synchronized properly (by spinlock and memory orderings).
 unsafe impl<T> Sync for SpinLock<T> where T: Send {}
 
 pub struct SpinLockGuard<'a, T> {
@@ -59,14 +59,14 @@ impl<T> Deref for SpinLockGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        // Safety: Existence of guard means that we have exclusively locked the lock.
+        // SAFETY: Existence of guard means that we have exclusively locked the lock.
         unsafe { &*self.lock.value.get() }
     }
 }
 
 impl<T> DerefMut for SpinLockGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // Safety: Existence of guard means that we have exclusively locked the lock.
+        // SAFETY: Existence of guard means that we have exclusively locked the lock.
         unsafe { &mut *self.lock.value.get() }
     }
 }
