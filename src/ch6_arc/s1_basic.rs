@@ -17,11 +17,18 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicBool, AtomicUsize};
 use std::thread;
 
+/// Maximum number of [`Arc`] references.
+///
+/// Going above this limit will abort the program.
+const MAX_REF_COUNT: usize = isize::MAX as usize;
+
+#[derive(Debug)]
 struct ArcInner<T> {
     data: T,
     ref_count: AtomicUsize,
 }
 
+/// A thread-safe reference-counting pointer. `Arc` stands for "Atomically Reference Counted".
 #[derive(Debug)]
 pub struct Arc<T> {
     ptr: NonNull<ArcInner<T>>,
@@ -67,7 +74,7 @@ impl<T> Deref for Arc<T> {
 
 impl<T> Clone for Arc<T> {
     fn clone(&self) -> Self {
-        if self.get_inner().ref_count.fetch_add(1, Relaxed) > usize::MAX >> 1 {
+        if self.get_inner().ref_count.fetch_add(1, Relaxed) > MAX_REF_COUNT {
             abort();
         }
 

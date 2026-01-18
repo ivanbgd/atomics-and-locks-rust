@@ -1,4 +1,4 @@
-use atomics_and_locks_rust::ch6_arc::s2_weak::*;
+use atomics_and_locks_rust::ch6_arc::s3_optimized::*;
 
 fn main() {
     run_example_basic();

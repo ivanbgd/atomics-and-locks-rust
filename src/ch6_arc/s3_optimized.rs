@@ -1,19 +1,12 @@
-//! # Weak Pointers
+//! # Optimized Arc with Weak
 //!
-//! https://marabos.nl/atomics/building-arc.html#weak-pointers
+//! https://marabos.nl/atomics/building-arc.html#optimizing-arc
 //!
-//! Weak pointers help break cycles and can also keep a reference to the allocation
-//! inside `Arc` around if there is currently no `Arc` (strong reference) around.
-//!
-//! A weak pointer does not prevent the value stored in the allocation from being dropped.
-//! It will be dropped if the strong count goes down to zero.
-//!
-//! Circular (mutual) references are possible in case of tree data structure, for example,
-//! where a parent node points to its children nodes, and children nodes point to their parent node.
-//! Without weak references, mutual strong references would prevent `Arc` from being dropped.
-//! So, parents can hold strong references to children, and children can hold weak references to parents.
+//! While weak pointers can be useful, the `Arc` type is often used without any weak pointers.
+//! This implementation optimizes `Arc` for that.
 
 use std::cell::UnsafeCell;
+use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -25,73 +18,138 @@ use std::thread;
 /// Going above this limit will abort the program.
 const MAX_REF_COUNT: usize = isize::MAX as usize;
 
-/// Holds data, strong count and total (strong plus weak) count.
+/// A special sentinel value which represents a special "locked" state of the combined pointer counter.
+const LOCKED: usize = usize::MAX;
+
+/// Holds data, strong count and combined count.
+///
+/// The combined count counts all [`Arc`] pointers combined as one single [`Weak`] pointer.
 #[derive(Debug)]
 struct ArcInner<T> {
-    /// The data. `None` if there's only one weak pointer left.
-    data: UnsafeCell<Option<T>>,
+    /// The data. Dropped if there are only weak pointers left.
+    data: UnsafeCell<ManuallyDrop<T>>,
     /// Number of [`Arc`]s.
     strong_count: AtomicUsize,
-    /// Total number of [`Arc`]s and [`Weak`]s combined.
-    total_count: AtomicUsize,
+    /// Combined number of [`Arc`]s and [`Weak`]s:
+    /// counts all [`Arc`] pointers combined as one single [`Weak`] pointer.
+    ///
+    /// Number of [`Weak`]s, plus one if there are any [`Arc`]s.
+    combined_count: AtomicUsize,
 }
 
-/// Contains pointer to [`ArcInner`].
 #[derive(Debug)]
 pub struct Weak<T> {
     ptr: NonNull<ArcInner<T>>,
 }
 
 /// A thread-safe reference-counting pointer. `Arc` stands for "Atomically Reference Counted".
-///
-/// Contains [`Weak`].
 #[derive(Debug)]
 pub struct Arc<T> {
-    weak: Weak<T>,
+    ptr: NonNull<ArcInner<T>>,
 }
 
 unsafe impl<T: Send + Sync> Send for Weak<T> {}
 unsafe impl<T: Send + Sync> Sync for Weak<T> {}
 
+unsafe impl<T: Send + Sync> Send for Arc<T> {}
+unsafe impl<T: Send + Sync> Sync for Arc<T> {}
+
 impl<T> Arc<T> {
     pub fn new(data: T) -> Self {
         let inner = ArcInner {
-            data: UnsafeCell::new(Some(data)),
+            data: UnsafeCell::new(ManuallyDrop::new(data)),
             strong_count: AtomicUsize::new(1),
-            total_count: AtomicUsize::new(1),
+            combined_count: AtomicUsize::new(1),
         };
         let ptr = NonNull::from(Box::leak(Box::new(inner)));
-        let weak = Weak { ptr };
 
-        Self { weak }
+        Self { ptr }
     }
 
-    /// Returns `Some(&mut T)` if total count is exactly one, i.e., there is
-    /// one strong count (one Arc) and no weak counts (no Weak pointers).
+    /// Returns the [`ArcInner`] struct.
+    fn get_inner(&self) -> &ArcInner<T> {
+        // SAFETY: Pointer always points to valid `ArcInner<T>` as long as the `Arc` object exists.
+        unsafe { self.ptr.as_ref() }
+    }
+
+    /// Returns `Some(&mut T)` if both counters are exactly one, which means that
+    /// there is one strong count (one Arc) and no weak counts (no Weak pointers).
     ///
     /// `T` stands for the actual data protected by this `Arc`.
     ///
     /// Returns `None` otherwise.
     pub fn get_mut(arc: &mut Self) -> Option<&mut T> {
-        if arc.weak.get_inner().total_count.load(Relaxed) == 1 {
-            fence(Acquire);
-
-            // SAFETY: This is the only strong reference and we hold it. This is the only Arc.
-            // Total reference count is one, and there are no weak references.
-            let inner = unsafe { arc.weak.ptr.as_mut() };
-            let option = inner.data.get_mut();
-            // We know that the data is still available as we hold Arc to it, so this won't panic.
-            let data = option.as_mut().expect("expected some data");
-
-            Some(data)
-        } else {
-            None
+        // If combined count isn't one (if it's zero or more than one), we return None.
+        //
+        // If it is one, we briefly "lock" the combined counter so that we can "atomically" load
+        // the strong count - "atomically" meaning at the same time in this context.
+        // We want to check both counters "at the same time", so we use this "trick" with briefly
+        // "locking" one of them.
+        // So, we set the combined counter to a sentinel value and resume.
+        // We'll restore its original value of one soon, right after we load strong count, and no later.
+        //
+        // Acquire matches Weak::drop()'s Release decrement, to make sure any
+        // upgraded pointers are visible in the next strong_count.load().
+        if arc
+            .get_inner()
+            .combined_count
+            .compare_exchange(1, LOCKED, Acquire, Relaxed)
+            .is_err()
+        {
+            return None;
         }
+
+        // Load and compare the strong count with desired value of one.
+        // We store this in a temporary/auxiliary variable so that we can restore combined count as quickly as possible.
+        let is_arc_unique = arc.get_inner().strong_count.load(Relaxed) == 1;
+
+        // As soon as we've loaded the strong count, we store back the original value of one to the combined counter.
+        // Release matches with Acquire increment of combined_count in Self::downgrade().
+        // We do this to make sure that any changes to the strong_count that come after Self::downgrade()
+        // don't change the `is_arc_unique` result above.
+        arc.get_inner().combined_count.store(1, Release);
+
+        // We can check the strong count now.
+        // We could have checked it before restoring the combined count, but that would have been an unnecessary delay.
+        if !is_arc_unique {
+            return None;
+        }
+
+        // Acquire to match Arc::drop()'s Release decrement, to make sure nothing else is accessing the data.
+        fence(Acquire);
+
+        unsafe { Some(&mut **arc.get_inner().data.get()) }
     }
 
-    /// Increments the total count (strong plus weak) by one.
+    /// Increments the combined counter by one.
     pub fn downgrade(arc: &Self) -> Weak<T> {
-        arc.weak.clone()
+        let mut cnt = arc.get_inner().combined_count.load(Relaxed);
+
+        loop {
+            // This shouldn't take long, so we spin-loop (busy-wait),
+            // but we at least hint that to the compiler which hints that to the CPU (if supported).
+            if cnt == LOCKED {
+                std::hint::spin_loop();
+                cnt = arc.get_inner().combined_count.load(Relaxed);
+            } else {
+                assert!(cnt < MAX_REF_COUNT);
+
+                // Acquire synchronizes with Release store of combined_count in Self::get_mut().
+                match arc.get_inner().combined_count.compare_exchange_weak(
+                    cnt,
+                    cnt + 1,
+                    Acquire,
+                    Relaxed,
+                ) {
+                    Ok(_) => return Weak { ptr: arc.ptr },
+                    Err(e) => {
+                        // Some other thread has modified the combined count in the meantime,
+                        // so we have to update its value in this thread.
+                        cnt = e
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -99,9 +157,9 @@ impl<T> Deref for Arc<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        let ptr = self.weak.get_inner().data.get();
+        let ptr = self.get_inner().data.get();
         // SAFETY: Since there is an Arc to the data, the data exists and can be shared.
-        unsafe { (*ptr).as_ref().expect("expected some value") }
+        unsafe { &(*ptr) }
     }
 }
 
@@ -114,7 +172,7 @@ impl<T> Weak<T> {
 
     /// Upgrades weak to strong ([`Weak`] to [`Arc`]) if there is at least one `Arc`,
     /// i.e., if the strong count is at least one, and returns it.
-    /// Increments the strong count and the total (strong + weak) count, both by one, in this case.
+    /// Increments the strong count by one, in this case.
     ///
     /// Otherwise, i.e., when strong count is zero, returns [`None`].
     pub fn upgrade(&self) -> Option<Arc<T>> {
@@ -132,12 +190,7 @@ impl<T> Weak<T> {
                 Relaxed,
                 Relaxed,
             ) {
-                Ok(_) => {
-                    return Some(Arc {
-                        // `Weak::clone()` increments the total count (strong plus weak) by one.
-                        weak: Self::clone(self),
-                    });
-                }
+                Ok(_) => return Some(Arc { ptr: self.ptr }),
                 Err(e) => {
                     // Some other thread has modified the strong count in the meantime,
                     // so we have to update its value in this thread.
@@ -149,9 +202,9 @@ impl<T> Weak<T> {
 }
 
 impl<T> Clone for Weak<T> {
-    /// Increments the total count (strong plus weak) by one.
+    /// Increments the combined count by one.
     fn clone(&self) -> Self {
-        if self.get_inner().total_count.fetch_add(1, Relaxed) > MAX_REF_COUNT {
+        if self.get_inner().combined_count.fetch_add(1, Relaxed) > MAX_REF_COUNT {
             std::process::abort();
         }
 
@@ -160,23 +213,20 @@ impl<T> Clone for Weak<T> {
 }
 
 impl<T> Clone for Arc<T> {
-    /// Increments the strong count and the total (strong + weak) count, both by one.
+    /// Increments the strong count by one.
     fn clone(&self) -> Self {
-        // `Weak::clone()` increments the total count (strong plus weak) by one.
-        let weak = Weak::clone(&self.weak);
-
-        if self.weak.get_inner().strong_count.fetch_add(1, Relaxed) > MAX_REF_COUNT {
+        if self.get_inner().strong_count.fetch_add(1, Relaxed) > MAX_REF_COUNT {
             std::process::abort();
         }
 
-        Self { weak }
+        Self { ptr: self.ptr }
     }
 }
 
 impl<T> Drop for Weak<T> {
-    /// Decrements the total count (strong plus weak) by one.
+    /// Decrements the combined count by one.
     fn drop(&mut self) {
-        if self.get_inner().total_count.fetch_sub(1, Release) == 1 {
+        if self.get_inner().combined_count.fetch_sub(1, Release) == 1 {
             fence(Acquire);
 
             // SAFETY: This is the last total reference, so we can safely drop the object.
@@ -189,16 +239,20 @@ impl<T> Drop for Weak<T> {
 
 impl<T> Drop for Arc<T> {
     /// Decrements the strong count by one.
+    ///
+    /// Only dropping the very last [`Arc`] will decrement the weak pointer counter too.
     fn drop(&mut self) {
-        if self.weak.get_inner().strong_count.fetch_sub(1, Release) == 1 {
+        if self.get_inner().strong_count.fetch_sub(1, Release) == 1 {
             fence(Acquire);
 
-            let ptr = self.weak.get_inner().data.get();
-
-            // SAFETY: This is the last strong reference, so nothing else can access it.
+            // SAFETY: This was the last strong reference, so nothing else can access it.
             unsafe {
-                *ptr = None;
+                ManuallyDrop::drop(&mut *self.get_inner().data.get());
             }
+
+            // Now that there are no `Arc<T>`s left, drop the implicit weak pointer that
+            // represented all `Arc<T>`s.
+            drop(Weak { ptr: self.ptr });
         }
     }
 }
