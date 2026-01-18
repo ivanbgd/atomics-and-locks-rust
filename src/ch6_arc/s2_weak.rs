@@ -20,6 +20,8 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicBool, AtomicUsize};
 use std::thread;
 
+/// Holds data, strong count and total (strong plus weak) count.
+#[derive(Debug)]
 struct ArcInner<T> {
     /// The data. `None` if there's only one weak pointer left.
     data: UnsafeCell<Option<T>>,
@@ -29,11 +31,13 @@ struct ArcInner<T> {
     total_count: AtomicUsize,
 }
 
+/// Contains pointer to [`ArcInner`].
 #[derive(Debug)]
 pub struct Weak<T> {
     ptr: NonNull<ArcInner<T>>,
 }
 
+/// Contains [`Weak`].
 #[derive(Debug)]
 pub struct Arc<T> {
     weak: Weak<T>,
@@ -88,11 +92,17 @@ impl<T> Deref for Arc<T> {
 }
 
 impl<T> Weak<T> {
+    /// Returns the [`ArcInner`] struct.
     fn get_inner(&self) -> &ArcInner<T> {
         // SAFETY: Pointer always points to valid `ArcInner<T>` as long as the `Weak` object exists.
         unsafe { self.ptr.as_ref() }
     }
 
+    /// Upgrades weak to strong ([`Weak`] to [`Arc`]) if there is at least one `Arc`,
+    /// i.e., if the strong count is at least one, and returns it.
+    /// Increments the strong count and the total (strong + weak) count, both by one, in this case.
+    ///
+    /// Otherwise, i.e., when strong count is zero, returns [`None`].
     pub fn upgrade(&self) -> Option<Arc<T>> {
         let mut cnt = self.get_inner().strong_count.load(Relaxed);
         loop {
@@ -110,6 +120,7 @@ impl<T> Weak<T> {
             ) {
                 Ok(_) => {
                     return Some(Arc {
+                        // `Weak::clone()` increments the total count (strong plus weak) by one.
                         weak: Self::clone(self),
                     });
                 }
@@ -120,6 +131,7 @@ impl<T> Weak<T> {
 }
 
 impl<T> Clone for Weak<T> {
+    /// Increments the total count (strong plus weak) by one.
     fn clone(&self) -> Self {
         if self.get_inner().total_count.fetch_add(1, Relaxed) > usize::MAX >> 1 {
             std::process::abort();
@@ -130,7 +142,9 @@ impl<T> Clone for Weak<T> {
 }
 
 impl<T> Clone for Arc<T> {
+    /// Increments the strong count and the total (strong + weak) count, both by one.
     fn clone(&self) -> Self {
+        // `Weak::clone()` increments the total count (strong plus weak) by one.
         let weak = Weak::clone(&self.weak);
 
         if self.weak.get_inner().strong_count.fetch_add(1, Relaxed) > usize::MAX >> 1 {
@@ -142,6 +156,7 @@ impl<T> Clone for Arc<T> {
 }
 
 impl<T> Drop for Weak<T> {
+    /// Decrements the total count (strong plus weak) by one.
     fn drop(&mut self) {
         if self.get_inner().total_count.fetch_sub(1, Release) == 1 {
             fence(Acquire);
@@ -155,6 +170,7 @@ impl<T> Drop for Weak<T> {
 }
 
 impl<T> Drop for Arc<T> {
+    /// Decrements the strong count by one.
     fn drop(&mut self) {
         if self.weak.get_inner().strong_count.fetch_sub(1, Release) == 1 {
             fence(Acquire);
@@ -283,4 +299,27 @@ pub fn run_example_weak2() {
 
     drop(arc);
     assert!(NUM_DROPS.load(Relaxed));
+}
+
+pub fn test_weak_remains() {
+    let arc = Arc::new(5);
+
+    println!("{arc:?}");
+    let weak = Arc::downgrade(&arc);
+    println!("{weak:?}");
+
+    drop(arc);
+
+    // Weak remains after dropping Arc.
+    println!("{weak:?}");
+
+    // Weak pointer should not be upgradeable at this point.
+    let none_arc = weak.upgrade();
+    println!("{none_arc:?}"); // None
+    assert!(none_arc.is_none());
+
+    drop(weak);
+
+    println!("{none_arc:?}");
+    assert!(none_arc.is_none());
 }
