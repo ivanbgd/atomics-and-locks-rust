@@ -1,8 +1,14 @@
-use atomics_and_locks_rust::ch6_arc::s3_optimized::*;
+use atomics_and_locks_rust::ch7_hardware::*;
 
 fn main() {
-    run_example_basic();
-    run_example_weak1();
-    run_example_weak2();
-    test_weak_remains();
+    optimized_away();
+    not_optimized();
+    bg_load();
+    bg_cas();
+    bg_store();
+    array_bg_store();
+    array_bg_store_strided();
+    array_bg_store_aligned();
+    reordering_experiment_compiler_fence();
+    reordering_experiment_fence();
 }
