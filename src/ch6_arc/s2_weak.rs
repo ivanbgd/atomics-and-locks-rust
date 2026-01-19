@@ -12,6 +12,16 @@
 //! where a parent node points to its children nodes, and children nodes point to their parent node.
 //! Without weak references, mutual strong references would prevent `Arc` from being dropped.
 //! So, parents can hold strong references to children, and children can hold weak references to parents.
+//!
+//! At [Optimization of Compare-and-Exchange Loops](https://marabos.nl/atomics/hardware.html#compare-exchange-optimization),
+//! it is advised, at least as of Rust 1.66, "to use the dedicated fetch-and-modify methods rather than a
+//! compare-and-exchange loop, if possible".
+//!
+//! A little before that, at [ARMv8.1 Atomic Instructions](https://marabos.nl/atomics/hardware.html#armv81),
+//! it is mentioned that newer ARM64 editions have new powerful instructions.
+//!
+//! So, compilers might not be up to speed, and we should listen to the advice.
+//! Namely, it isn't easy for compilers to translate and optimize these loops.
 
 use std::cell::UnsafeCell;
 use std::ops::Deref;
@@ -126,6 +136,23 @@ impl<T> Weak<T> {
 
             assert!(cnt < MAX_REF_COUNT);
 
+            // Not sure about this:
+            // Since we use `compare_exchange_weak()` instead of `compare_exchange()`, we have to do it in a loop,
+            // because on the ARM64 architecture it doesn't loop internally, unlike `compare_exchange()`, which does.
+            // On x86-64 `compare_exchange()` and `compare_exchange_weak()` are the same, and they both loop internally.
+            // So, we need to loop here in case `compare_exchange_weak()` doesn't loop on an architecture,
+            // such as ARM64, for example.
+            // What we mean by "internally" is when the operation gets translated to assembly.
+            // Namely, reading https://marabos.nl/atomics/atomics.html#cas again, explains why a loop is needed
+            // even with `compare_exchange()`, through an example.
+            //
+            // At https://marabos.nl/atomics/hardware.html#compare-exchange-optimization, it is advised, at least
+            // as of Rust 1.66, "to use the dedicated fetch-and-modify methods rather than a compare-and-exchange loop,
+            // if possible".
+            // A little before that, at https://marabos.nl/atomics/hardware.html#armv81, it is mentioned that newer
+            // ARM64 editions have new powerful instructions.
+            // So, compilers might not be up to speed, and we should listen to the advice.
+            // Namely, it isn't easy for compilers to translate and optimize these loops.
             match self.get_inner().strong_count.compare_exchange_weak(
                 cnt,
                 cnt + 1,

@@ -4,6 +4,16 @@
 //!
 //! While weak pointers can be useful, the `Arc` type is often used without any weak pointers.
 //! This implementation optimizes `Arc` for that.
+//!
+//! At [Optimization of Compare-and-Exchange Loops](https://marabos.nl/atomics/hardware.html#compare-exchange-optimization),
+//! it is advised, at least as of Rust 1.66, "to use the dedicated fetch-and-modify methods rather than a
+//! compare-and-exchange loop, if possible".
+//!
+//! A little before that, at [ARMv8.1 Atomic Instructions](https://marabos.nl/atomics/hardware.html#armv81),
+//! it is mentioned that newer ARM64 editions have new powerful instructions.
+//!
+//! So, compilers might not be up to speed, and we should listen to the advice.
+//! Namely, it isn't easy for compilers to translate and optimize these loops.
 
 use std::cell::UnsafeCell;
 use std::mem::ManuallyDrop;
@@ -90,6 +100,18 @@ impl<T> Arc<T> {
         //
         // Acquire matches Weak::drop()'s Release decrement, to make sure any
         // upgraded pointers are visible in the next strong_count.load().
+        //
+        // Not sure about this:
+        // `compare_exchange()` doesn't require a loop in our source code, at least not on the x86-64 and ARM64
+        // platforms, because it translates to assembly instructions in a loop on those two platforms.
+        // Namely, reading https://marabos.nl/atomics/atomics.html#cas again, explains why a loop is needed
+        // even with `compare_exchange()`, through an example.
+        // // We do use a loop in the corresponding `Self::downgrade()` method, in which we check the value of
+        // // `combined_count`, so perhaps that offsets the lack of loop here, or perhaps we simply don't need it here
+        // // as we don't load the value before the `compare_exchange()` operation, and we don't load it because we don't need it.
+        // We don't need a loop here because we are not trying to update the value "at any cost", so to speak.
+        // We just want to check it once and update it if it succeeds, and return None otherwise.
+        // `compare_exchange()` won't update the value if it fails, i.e., if the starting value wasn't one in this case.
         if arc
             .get_inner()
             .combined_count
@@ -126,9 +148,12 @@ impl<T> Arc<T> {
         let mut cnt = arc.get_inner().combined_count.load(Relaxed);
 
         loop {
-            // This shouldn't take long, so we spin-loop (busy-wait),
-            // but we at least hint that to the compiler which hints that to the CPU (if supported).
             if cnt == LOCKED {
+                // This shouldn't take long, so we spin-loop (busy-wait),
+                // but we at least hint that to the compiler which hints that to the CPU (if supported).
+                //
+                // We are waiting for `combined_count` to become "unlocked".
+                // It becomes "locked" in `Self::get_mut()` - that is the only place where we "lock" it .
                 std::hint::spin_loop();
                 cnt = arc.get_inner().combined_count.load(Relaxed);
             } else {
