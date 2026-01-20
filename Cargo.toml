@@ -18,6 +18,7 @@ name = "atomics-and-locks-rust"
 path = "src/main.rs"
 
 [dependencies]
+atomic-wait = "1"
 
 [profile.release]
 strip = "symbols"

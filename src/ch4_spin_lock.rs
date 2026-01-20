@@ -4,6 +4,7 @@
 
 use std::ops::{Deref, DerefMut};
 use std::thread::JoinHandle;
+use std::time::Instant;
 use std::{
     cell::UnsafeCell,
     sync::{
@@ -13,11 +14,15 @@ use std::{
     thread,
 };
 
+#[derive(Debug)]
 pub struct SpinLock<T> {
     locked: AtomicBool,
     // [`UnsafeCell`] is required for interior mutability.
     value: UnsafeCell<T>,
 }
+
+// SAFETY: All interior mutations are synchronized properly (by spinlock and memory orderings).
+unsafe impl<T> Sync for SpinLock<T> where T: Send {}
 
 impl<T> SpinLock<T> {
     pub const fn new(value: T) -> Self {
@@ -29,6 +34,7 @@ impl<T> SpinLock<T> {
 
     pub fn lock(&self) -> SpinLockGuard<'_, T> {
         // Works incorrectly if we use `Relaxed` instead of `Acquire` for the success case.
+        // We could use `swap()` instead of `compare_exchange`.
         while self
             .locked
             .compare_exchange_weak(false, true, Acquire, Relaxed)
@@ -41,12 +47,13 @@ impl<T> SpinLock<T> {
     }
 }
 
-// SAFETY: All interior mutations are synchronized properly (by spinlock and memory orderings).
-unsafe impl<T> Sync for SpinLock<T> where T: Send {}
-
+#[derive(Debug)]
 pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
 }
+
+unsafe impl<T> Send for SpinLockGuard<'_, T> where T: Send {}
+unsafe impl<T> Sync for SpinLockGuard<'_, T> where T: Sync {}
 
 impl<T> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
@@ -70,9 +77,6 @@ impl<T> DerefMut for SpinLockGuard<'_, T> {
         unsafe { &mut *self.lock.value.get() }
     }
 }
-
-unsafe impl<T> Send for SpinLockGuard<'_, T> where T: Send {}
-unsafe impl<T> Sync for SpinLockGuard<'_, T> where T: Sync {}
 
 pub fn run_example1() -> i32 {
     let counter = SpinLock::new(0);
@@ -98,6 +102,8 @@ pub fn run_example1() -> i32 {
 pub fn run_example2() -> i32 {
     let counter = Arc::new(SpinLock::new(0));
 
+    let start = Instant::now();
+
     let handles: [JoinHandle<()>; 4] = std::array::from_fn(|_| {
         let counter = Arc::clone(&counter);
         thread::spawn(move || {
@@ -111,11 +117,38 @@ pub fn run_example2() -> i32 {
         h.join().unwrap();
     }
 
+    // ~300 ms on Apple M2 Pro; it takes ~800 ms for ch9_locks::mutex_1.rs
+    let elapsed = start.elapsed();
+
     let result = *counter.lock();
     assert_eq!(4 * 1_000_000, result);
-    println!("Total 2: {}", result);
+    println!("Total 2: {}; elapsed = {:.3?}", result, elapsed);
 
     result
+}
+
+pub fn run_example3() {
+    let vec = SpinLock::new(Vec::new());
+
+    thread::scope(|s| {
+        s.spawn(|| vec.lock().push(1));
+    });
+
+    thread::scope(|s| {
+        s.spawn(|| {
+            let mut guard = vec.lock();
+            guard.push(2);
+            guard.push(2);
+        });
+    });
+
+    let guard = vec.lock();
+    assert!(guard.as_slice() == [1, 2, 2] || guard.as_slice() == [2, 2, 1]);
+    println!(
+        "vec = {:?}; guard state = {:?}",
+        guard.as_slice(),
+        guard.lock.locked
+    );
 }
 
 #[cfg(test)]
