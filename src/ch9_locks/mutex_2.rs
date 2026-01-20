@@ -148,6 +148,7 @@ pub fn run_example1() -> i32 {
 
 pub fn run_example2() -> i32 {
     let counter = Arc::new(Mutex::new(0));
+    std::hint::black_box(&counter); // Doesn't affect performance (on Apple M2 Pro).
 
     let start = Instant::now();
 
@@ -164,7 +165,7 @@ pub fn run_example2() -> i32 {
         h.join().unwrap();
     }
 
-    // ~100 ms on Apple M2 Pro; it takes ~300 ms for ch4_spin_lock.rs, ~800 ms for mutex_1
+    // ~100 ms on Apple M2 Pro; it takes ~350 ms for ch4_spin_lock.rs, ~900 ms for mutex_1
     let elapsed = start.elapsed();
 
     let result = counter.lock();
@@ -199,4 +200,35 @@ pub fn run_example3() {
         guard.as_slice(),
         guard.mutex.state
     );
+}
+
+/// Like [`run_example2()`] but without `Arc` protecting the `Mutex`.
+/// This one is slightly faster than [`run_example2()`].
+pub fn run_example4() -> i32 {
+    let counter = Mutex::new(0);
+    std::hint::black_box(&counter); // Doesn't affect performance (on Apple M2 Pro).
+
+    let start = Instant::now();
+
+    thread::scope(|s| {
+        for _ in 0..4 {
+            s.spawn(|| {
+                for _ in 0..1_000_000 {
+                    *counter.lock() += 1;
+                }
+            });
+        }
+    });
+
+    // ~80 ms on Apple M2 Pro; it takes ~350 ms for ch4_spin_lock.rs, ~900 ms for mutex_1
+    let elapsed = start.elapsed();
+
+    let result = counter.lock();
+    assert_eq!(4 * 1_000_000, *result);
+    println!(
+        "Total 4: {}; locked state = {:?}; elapsed = {:.3?}",
+        *result, result.mutex.state, elapsed
+    );
+
+    *result
 }

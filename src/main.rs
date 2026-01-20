@@ -8,4 +8,5 @@ fn main() {
     run_example1();
     run_example2();
     run_example3();
+    run_example4();
 }
