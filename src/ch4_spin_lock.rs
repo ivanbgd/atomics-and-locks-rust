@@ -1,6 +1,8 @@
 //! # Chapter 4: Building Our Own Spin Lock
 //!
 //! https://marabos.nl/atomics/building-spinlock.html
+//!
+//! See [`run_example2()`] for some performance measurements and comparison with our implementations of mutex.
 
 use std::ops::{Deref, DerefMut};
 use std::thread::JoinHandle;
@@ -117,14 +119,17 @@ pub fn run_example2() -> i32 {
         h.join().unwrap();
     }
 
-    // ~300 ms on Apple M2 Pro; it takes ~800 ms for ch9_locks::mutex_1.rs
+    // ~300 ms on Apple M2 Pro; it takes ~800 ms for ch9_locks::mutex_1.rs, but ~100 ms for ch9_locks::mutex_2.rs
     let elapsed = start.elapsed();
 
-    let result = *counter.lock();
-    assert_eq!(4 * 1_000_000, result);
-    println!("Total 2: {}; elapsed = {:.3?}", result, elapsed);
+    let result = counter.lock();
+    assert_eq!(4 * 1_000_000, *result);
+    println!(
+        "Total 2: {}; locked state = {:?}; elapsed = {:.3?}",
+        *result, result.lock.locked, elapsed
+    );
 
-    result
+    *result
 }
 
 pub fn run_example3() {
@@ -145,7 +150,7 @@ pub fn run_example3() {
     let guard = vec.lock();
     assert!(guard.as_slice() == [1, 2, 2] || guard.as_slice() == [2, 2, 1]);
     println!(
-        "vec = {:?}; guard state = {:?}",
+        "vec = {:?}; locked state = {:?}",
         guard.as_slice(),
         guard.lock.locked
     );

@@ -5,13 +5,15 @@
 //! We use an enum to represent the unlocked and locked states, while the book uses concrete integer values
 //! (magic numbers).
 //!
-//! We use trivial conversions (`as`), as well as `into()`, because we implement the [`From`] trait for `u32`.
+//! We use trivial conversions (`as u32`), as well as `into()`, because we implement the [`From`] trait for `u32`.
 //!
 //! Perhaps it could be faster to use plain integer values, but this is just an example anyway,
 //! and it follows the clean-code principles. Proper naming better conveys the purpose and use.
 //!
 //! If performance matters, it needs to be benchmarked on concrete platforms of interest (CPU + OS),
 //! and it may also depend on the compiler (Rust) version, i.e., on compiler optimizations.
+//!
+//! I tried it on Apple M2 Pro with macOS and the speed was exactly the same for `into()` and `as u32`.
 
 use atomic_wait::{wait, wake_one};
 use std::cell::UnsafeCell;
@@ -53,6 +55,11 @@ impl<T> Mutex<T> {
         }
     }
 
+    /// If the state is unlocked, locks the mutex.
+    ///
+    /// If it is already locked, waits until it becomes unlocked.
+    ///
+    /// Ultimately, in either case, it locks an unlocked mutex and returns the mutex guard to itself.
     pub fn lock(&self) -> MutexGuard<'_, T> {
         // Set the state to locked if it is unlocked...
         while self.state.swap(State::Locked.into(), Acquire) == State::Locked.into() {
@@ -145,14 +152,17 @@ pub fn run_example2() -> i32 {
         h.join().unwrap();
     }
 
-    // ~800 ms on Apple M2 Pro; it takes ~300 ms for ch4_spin_lock.rs
+    // ~800 ms on Apple M2 Pro; it takes ~300 ms for ch4_spin_lock.rs, ~100 ms for mutex_2
     let elapsed = start.elapsed();
 
-    let result = *counter.lock();
-    assert_eq!(4 * 1_000_000, result);
-    println!("Total 2: {}; elapsed = {:.3?}", result, elapsed);
+    let result = counter.lock();
+    assert_eq!(4 * 1_000_000, *result);
+    println!(
+        "Total 2: {}; guard state = {:?}; elapsed = {:.3?}",
+        *result, result.mutex.state, elapsed
+    );
 
-    result
+    *result
 }
 
 pub fn run_example3() {

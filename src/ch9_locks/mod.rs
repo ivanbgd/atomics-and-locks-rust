@@ -3,3 +3,4 @@
 //! https://marabos.nl/atomics/building-locks.html
 
 pub mod mutex_1;
+pub mod mutex_2;
