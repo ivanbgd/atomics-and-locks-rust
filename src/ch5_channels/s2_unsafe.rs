@@ -105,15 +105,15 @@ pub fn run_example2() {
             }
             t.unpark();
         });
+
+        while !channel.is_ready() {
+            thread::park();
+        }
+
+        let message = unsafe { channel.recv() };
+        println!("{message}");
+        assert_eq!("hello world 2!", message);
     });
-
-    while !channel.is_ready() {
-        thread::park();
-    }
-
-    let message = unsafe { channel.recv() };
-    println!("{message}");
-    assert_eq!("hello world 2!", message);
 }
 
 /// There's one sender thread (child) and one receiver thread (also child), and one one-shot channel between them.

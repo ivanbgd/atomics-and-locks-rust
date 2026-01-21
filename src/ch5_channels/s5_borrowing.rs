@@ -110,11 +110,11 @@ pub fn run_example() {
             tx.send("Hello, borrowing world!");
             t.unpark();
         });
-    });
 
-    while !rx.is_ready() {
-        thread::park();
-    }
+        while !rx.is_ready() {
+            thread::park();
+        }
+    });
 
     let msg = rx.recv();
     println!("{msg}");

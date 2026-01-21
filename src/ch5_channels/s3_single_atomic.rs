@@ -101,15 +101,15 @@ pub fn run_example() {
             channel.send("hello world!");
             t.unpark();
         });
+
+        // We have to block manually waiting for a message, as the `Channel::recv()` method is non-blocking.
+        // We park the thread to achieve that.
+        while !channel.is_ready() {
+            thread::park();
+        }
+
+        let message = channel.recv();
+        println!("{message}");
+        assert_eq!("hello world!", message);
     });
-
-    // We have to block manually waiting for a message, as the `Channel::recv()` method is non-blocking.
-    // We park the thread to achieve that.
-    while !channel.is_ready() {
-        thread::park();
-    }
-
-    let message = channel.recv();
-    println!("{message}");
-    assert_eq!("hello world!", message);
 }

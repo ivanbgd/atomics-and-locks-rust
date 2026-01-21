@@ -81,7 +81,32 @@ impl<T> Drop for Channel<T> {
 }
 
 /// There's one sender thread (child) and one receiver thread (parent/main), and one one-shot channel between them.
-pub fn run_example() {
+pub fn run_example1() {
+    let channel = Channel::new();
+
+    let t = thread::current();
+
+    thread::scope(|s| {
+        s.spawn(|| {
+            thread::sleep(Duration::from_secs(1));
+            channel.send("hello checks world!");
+            t.unpark();
+        });
+
+        // We have to block manually waiting for a message, as the `Channel::recv()` method is non-blocking.
+        // We park the thread to achieve that.
+        while !channel.is_ready() {
+            thread::park();
+        }
+
+        let message = channel.recv();
+        println!("{message}");
+        assert_eq!("hello checks world!", message);
+    });
+}
+
+/// There's one sender thread (child) and one receiver thread (parent/main), and one one-shot channel between them.
+pub fn run_example2() {
     let channel = Channel::new();
 
     let t = thread::current();

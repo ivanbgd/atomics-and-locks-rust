@@ -113,15 +113,15 @@ pub fn run_example() {
             sender.send(message);
             t.unpark();
         });
+
+        // We have to block manually waiting for a message, as the `Receiver::recv()` method is non-blocking.
+        // We park the thread to achieve that.
+        while !receiver.is_ready() {
+            thread::park();
+        }
+
+        let message = receiver.recv();
+        println!("{message}");
+        assert_eq!("Hello, types world!", message);
     });
-
-    // We have to block manually waiting for a message, as the `Receiver::recv()` method is non-blocking.
-    // We park the thread to achieve that.
-    while !receiver.is_ready() {
-        thread::park();
-    }
-
-    let message = receiver.recv();
-    println!("{message}");
-    assert_eq!("Hello, types world!", message);
 }
