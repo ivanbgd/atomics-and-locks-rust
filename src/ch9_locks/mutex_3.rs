@@ -1,9 +1,6 @@
-//! # Mutex: Avoiding Syscalls
+//! # Mutex: Optimizing Further
 //!
-//! https://marabos.nl/atomics/building-locks.html#mutex-avoid-syscalls
-//!
-//! On Apple M2 Pro on macOS this implementation seems to be much faster (multiple times)
-//! than the first implementation (see [`run_example2()`]).
+//! https://marabos.nl/atomics/building-locks.html#optimizing-further
 
 use atomic_wait::{wait, wake_one};
 use std::cell::UnsafeCell;
@@ -14,6 +11,8 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Instant;
+
+const MAX_SPIN_COUNT: usize = 100;
 
 #[derive(Debug)]
 #[repr(u32)]
@@ -47,6 +46,7 @@ impl<T> Mutex<T> {
     /// since the mutex wasn't locked before.
     ///
     /// Ultimately, in either of the three cases, it locks an unlocked mutex and returns the mutex guard to itself.
+    #[inline]
     pub fn lock(&self) -> MutexGuard<'_, T> {
         // Set the state to locked without other waiters if it is unlocked and return the mutex guard to itself.
         // But, if it's locked, we need to set the state to locked with other waiters.
@@ -61,26 +61,67 @@ impl<T> Mutex<T> {
             .is_err()
         {
             // It was already locked, so set the state to locked with other waiters.
-            // After we call wait(), we can no longer lock the mutex by setting its state to
-            // State::LockedWithoutWaiters, since that might result in other waiters being forgotten.
-            while self.state.swap(State::LockedWithWaiters as u32, Acquire)
-                != State::Unlocked as u32
-            {
-                // The mutex is indeed still locked. We should block.
-                // Wait until the state is no longer locked with other waiters.
-                // Still, if the state is not unlocked, we'll get back in this loop.
-                //
-                // `wait()` also checks the state, so we can't miss a wake-up call
-                // between the `swap()` and `wait()` calls.
-                // `wait()` will block if the state is locked with other waiters.
-                // Since it may return spuriously, we need to call it in a loop.
-                wait(&self.state, State::LockedWithWaiters as u32);
-            }
-            // The state was or is now unlocked, and we've successfully set it to locked with other waiters.
+            self.lock_contended();
         }
+
         // The state was unlocked, and we've successfully set it to locked without other waiters.
 
         MutexGuard { mutex: self }
+    }
+
+    /// There is contention on the lock (mutex), so let's optimize waiting for it to become unlocked.
+    ///
+    /// This method first spin-loops for a short amount of time, and if the mutex doesn't become unlocked
+    /// during that time, only then does it make a system call (through [`atomic_wait::wait()`]).
+    ///
+    /// The `cold` attribute doesn't seem to affect, i.e., help with, performance.
+    #[inline]
+    #[cold]
+    fn lock_contended(&self) {
+        let mut spin_count = 0;
+
+        // We use `load()` instead of `compare_exchange()`, because the latter generally attempts to get
+        // exclusive access to the relevant cache line, which can be more expensive than a simple load operation
+        // when executed repeatedly. See: https://marabos.nl/atomics/hardware.html#failing-compare-exchange
+        //
+        // We only spin as long as the mutex is locked and has no waiters.
+        // If another thread is already waiting, it means it gave up spinning because it took too long,
+        // which can be an indication that spinning will likely not be very useful for this thread either.
+        while self.state.load(Relaxed) == State::LockedWithoutWaiters as u32
+            && spin_count < MAX_SPIN_COUNT
+        {
+            spin_count += 1;
+            std::hint::spin_loop();
+        }
+
+        // If the mutex got unlocked in the meantime, lock it without other waiters and return.
+        if self
+            .state
+            .compare_exchange(
+                State::Unlocked as u32,
+                State::LockedWithoutWaiters as u32,
+                Acquire,
+                Relaxed,
+            )
+            .is_ok()
+        {
+            return;
+        }
+
+        // It is still locked, so set the state to locked with other waiters.
+        // After we call wait(), we can no longer lock the mutex by setting its state to
+        // State::LockedWithoutWaiters, since that might result in other waiters being forgotten.
+        while self.state.swap(State::LockedWithWaiters as u32, Acquire) != State::Unlocked as u32 {
+            // The mutex is still locked. We should block.
+            // Wait until the state is no longer locked with other waiters.
+            // Still, if the state is not unlocked, we'll get back in this loop.
+            //
+            // `wait()` also checks the state, so we can't miss a wake-up call
+            // between the `swap()` and `wait()` calls.
+            // `wait()` will block if the state is locked with other waiters.
+            // Since it may return spuriously, we need to call it in a loop.
+            wait(&self.state, State::LockedWithWaiters as u32);
+        }
     }
 }
 
@@ -93,6 +134,7 @@ unsafe impl<T: Send> Send for MutexGuard<'_, T> {}
 unsafe impl<T: Sync> Sync for MutexGuard<'_, T> {}
 
 impl<T> Drop for MutexGuard<'_, T> {
+    #[inline]
     fn drop(&mut self) {
         // Set the state to unlocked, and if it was locked without other waiters, there is no other thread
         // that we should wake, so we can return.
@@ -173,7 +215,7 @@ pub fn run_example2() -> i32 {
         h.join().unwrap();
     }
 
-    // ~100 ms on Apple M2 Pro; it takes ~350 ms for ch4_spin_lock.rs, ~900 ms for mutex_1, ~100 ms for mutex_3
+    // ~100 ms on Apple M2 Pro; it takes ~350 ms for ch4_spin_lock.rs, ~900 ms for mutex_1, ~100 ms for mutex_2
     let elapsed = start.elapsed();
 
     let result = counter.lock();
@@ -228,7 +270,7 @@ pub fn run_example4() -> i32 {
         }
     });
 
-    // ~90 ms on Apple M2 Pro; it takes ~350 ms for ch4_spin_lock.rs, ~900 ms for mutex_1, ~90 ms for mutex_3
+    // ~90 ms on Apple M2 Pro; it takes ~350 ms for ch4_spin_lock.rs, ~900 ms for mutex_1, ~90 ms for mutex_2
     let elapsed = start.elapsed();
 
     let result = counter.lock();

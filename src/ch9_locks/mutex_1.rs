@@ -134,6 +134,12 @@ pub fn run_example1() -> i32 {
     result
 }
 
+/// A test with lots of contention, with multiple threads repeatedly trying to lock an already locked mutex.
+///
+/// Note that this is an extreme and unrealistic scenario.
+/// The mutex is only kept for an extremely short time (only to increment an integer),
+/// and the threads will immediately attempt to lock the mutex again after unlocking.
+/// A different scenario will most likely result in very different results.
 pub fn run_example2() -> i32 {
     let counter = Arc::new(Mutex::new(0));
     std::hint::black_box(&counter); // Doesn't affect performance (on Apple M2 Pro).
@@ -153,7 +159,7 @@ pub fn run_example2() -> i32 {
         h.join().unwrap();
     }
 
-    // ~900 ms on Apple M2 Pro; it takes ~350 ms for ch4_spin_lock.rs, ~100 ms for mutex_2
+    // ~900 ms on Apple M2 Pro; it takes ~350 ms for ch4_spin_lock.rs, ~100 ms for mutex_2, ~100 ms for mutex_3
     let elapsed = start.elapsed();
 
     let result = counter.lock();
@@ -207,7 +213,7 @@ pub fn run_example4() -> i32 {
         }
     });
 
-    // ~900 ms on Apple M2 Pro; it takes ~350 ms for ch4_spin_lock.rs, but ~80 ms for ch9_locks::mutex_2.rs
+    // ~900 ms on Apple M2 Pro; it takes ~350 ms for ch4_spin_lock.rs, but ~90 ms for mutex_2 and ~90 ms for mutex_3
     let elapsed = start.elapsed();
 
     let result = counter.lock();
@@ -218,4 +224,30 @@ pub fn run_example4() -> i32 {
     );
 
     *result
+}
+
+/// Single thread.
+/// This is a test for the trivial uncontended scenario, where there are never any threads that need to be woken up.
+///
+/// On macOS, this isn't any slower than other implementations.
+/// As it turns out, the implementation of libc++'s std::atomic<T>::wake(), which we use on macOS,
+/// already performs its own bookkeeping, independent of the kernel, to avoid unnecessary syscalls.
+/// The same holds for WakeByAddressSingle() on Windows.
+/// It is much slower on Linux, though, than other implementations, perhaps even 10-30 times!
+pub fn run_example5() {
+    let m = Mutex::new(0);
+    // We use std::hint::black_box() to force the compiler to assume there might be more code that accesses the mutex,
+    // preventing it from optimizing away the loop or locking operations.
+    std::hint::black_box(&m);
+
+    let start = Instant::now();
+
+    for _ in 0..5_000_000 {
+        *m.lock() += 1;
+    }
+
+    let duration = start.elapsed();
+
+    println!("Locked {} times in {:?}", *m.lock(), duration); // 22 ms on Apple M2 Pro with macOS
+    assert_eq!(5_000_000, *m.lock());
 }

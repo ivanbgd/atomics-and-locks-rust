@@ -2,11 +2,12 @@
 //!
 //! ### Low-Level Concurrency in Practice
 
-use atomics_and_locks_rust::ch9_locks::mutex_2::*;
+use atomics_and_locks_rust::ch9_locks::mutex_3::*;
 
 fn main() {
     run_example1();
     run_example2();
     run_example3();
     run_example4();
+    run_example5();
 }
