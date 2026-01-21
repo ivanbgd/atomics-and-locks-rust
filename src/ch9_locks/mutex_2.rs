@@ -2,8 +2,15 @@
 //!
 //! https://marabos.nl/atomics/building-locks.html#mutex-avoid-syscalls
 //!
+//! Optimizing a locking primitive is mainly about avoiding unnecessary `wait` and `wake` operations.
+//!
+//! Those two operations involve system calls, and if we can avoid them somehow, at least in some cases,
+//! we can get a performance improvement.
+//!
+//! We introduce a new state for our mutex, the third one.
+//!
 //! On Apple M2 Pro on macOS this implementation seems to be much faster (multiple times)
-//! than the first implementation (see [`run_example2()`]).
+//! than the first implementation (see [`run_example2()`] and [`run_example4()`]).
 
 use atomic_wait::{wait, wake_one};
 use std::cell::UnsafeCell;
@@ -179,7 +186,7 @@ pub fn run_example2() -> i32 {
     let result = counter.lock();
     assert_eq!(4 * 1_000_000, *result);
     println!(
-        "Total 2: {}; guard state = {:?}; elapsed = {:.3?}",
+        "Total 2: {}; mutex state = {:?}; elapsed = {:.3?}",
         *result, result.mutex.state, elapsed
     );
 
@@ -234,7 +241,7 @@ pub fn run_example4() -> i32 {
     let result = counter.lock();
     assert_eq!(4 * 1_000_000, *result);
     println!(
-        "Total 4: {}; locked state = {:?}; elapsed = {:.3?}",
+        "Total 4: {}; mutex state = {:?}; elapsed = {:.3?}",
         *result, result.mutex.state, elapsed
     );
 

@@ -1,27 +1,25 @@
-//! # Condition Variable
+//! # Condition Variable: Avoiding Syscalls
 //!
-//! https://marabos.nl/atomics/building-locks.html#condition-variable
+//! https://marabos.nl/atomics/building-locks.html#avoiding-syscalls
 //!
-//! A condition variable is used together with a mutex to wait until the mutex-protected data matches some condition.
-//! It has a wait method that unlocks a mutex, waits for a signal, and locks the same mutex again.
-//! Signals are sent by other threads, usually right after modifying the mutex-protected data,
-//! to either one waiting thread (often called "notify one" or "signal") or all waiting threads
-//! (often called "notify all" or "broadcast").
+//! Optimizing a locking primitive is mainly about avoiding unnecessary `wait` and `wake` operations.
 //!
-//! We make sure that every notification changes an atomic variable (a counter), and our [`Condvar::wait()`]
-//! methods makes use of that by passing its value to a futex-like `wait()` function after unlocking the mutex.
-//! This way, the thread doesn't go to sleep if any notification signal arrived since unlocking the mutex,
-//! i.e., if the count has changed.
+//! Those two operations involve system calls, and if we can avoid them somehow, at least in some cases,
+//! we can get a performance improvement.
+//!
+//! We introduce keeping track of the number of waiting threads.
+//! If there are no waiters, the notify functions don't do anything. That's how we save execution time.
 
 use super::mutex_3::{Mutex, MutexGuard};
 use atomic_wait::{wait, wake_all, wake_one};
-use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicU32, AtomicUsize};
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub struct Condvar {
     counter: AtomicU32,
+    num_waiters: AtomicUsize,
 }
 
 impl Default for Condvar {
@@ -34,20 +32,29 @@ impl Condvar {
     pub const fn new() -> Self {
         Self {
             counter: AtomicU32::new(0),
+            num_waiters: AtomicUsize::new(0),
         }
     }
 
     pub fn notify_one(&self) {
-        self.counter.fetch_add(1, Relaxed);
-        wake_one(&self.counter);
+        // If there are no waiters, don't do anything!
+        if self.num_waiters.load(Relaxed) > 0 {
+            self.counter.fetch_add(1, Relaxed);
+            wake_one(&self.counter);
+        }
     }
 
     pub fn notify_all(&self) {
-        self.counter.fetch_add(1, Relaxed);
-        wake_all(&self.counter);
+        // If there are no waiters, don't do anything!
+        if self.num_waiters.load(Relaxed) > 0 {
+            self.counter.fetch_add(1, Relaxed);
+            wake_all(&self.counter);
+        }
     }
 
     pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
+        self.num_waiters.fetch_add(1, Relaxed);
+
         // Load the counter value and save it, before unlocking the mutex.
         let count = self.counter.load(Relaxed);
 
@@ -62,6 +69,8 @@ impl Condvar {
         // So, we wait until count changes.
         // When it changes, that means that we've been notified by some other thread and we may resume.
         wait(&self.counter, count);
+
+        self.num_waiters.fetch_sub(1, Relaxed);
 
         mutex.lock()
     }
@@ -129,13 +138,13 @@ pub fn run_example2() {
         }
     });
 
-    // 2.5 s on Apple M2 Pro
+    // 2.7 s on Apple M2 Pro
     let elapsed = start.elapsed();
 
     let result = counter.lock();
     assert_eq!(4 * 1_000_000, *result);
 
-    // Total 4: 4000000; mutex state = 1; condvar counter 4000000; elapsed = 2.552s
+    // Total 4: 4000000; mutex state = 1; condvar counter 3944489; elapsed = 2.666s
     println!(
         "Total 4: {}; mutex state = {:?}; condvar counter {}; elapsed = {:.3?}",
         *result,

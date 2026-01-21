@@ -158,7 +158,7 @@ pub fn run_example3() {
     let guard = vec.lock();
     assert!(guard.as_slice() == [1, 2, 2] || guard.as_slice() == [2, 2, 1]);
     println!(
-        "vec = {:?}; locked state = {:?}",
+        "vec = {:?}; guard state = {:?}",
         guard.as_slice(),
         guard.lock.locked
     );

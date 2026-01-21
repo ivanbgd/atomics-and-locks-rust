@@ -1,6 +1,13 @@
 //! # Mutex: Optimizing Further
 //!
 //! https://marabos.nl/atomics/building-locks.html#optimizing-further
+//!
+//! Optimizing a locking primitive is mainly about avoiding unnecessary `wait` and `wake` operations.
+//!
+//! Uses three states for the mutex.
+//!
+//! We can optimize further by spin-looping initially for a short period of time when locking the mutex,
+//! in case it is already locked by another thread.
 
 use atomic_wait::{wait, wake_one};
 use std::cell::UnsafeCell;
@@ -27,7 +34,7 @@ enum State {
 
 #[derive(Debug)]
 pub struct Mutex<T> {
-    state: AtomicU32,
+    pub(crate) state: AtomicU32,
     value: UnsafeCell<T>,
 }
 
@@ -221,7 +228,7 @@ pub fn run_example2() -> i32 {
     let result = counter.lock();
     assert_eq!(4 * 1_000_000, *result);
     println!(
-        "Total 2: {}; guard state = {:?}; elapsed = {:.3?}",
+        "Total 2: {}; mutex state = {:?}; elapsed = {:.3?}",
         *result, result.mutex.state, elapsed
     );
 
@@ -276,7 +283,7 @@ pub fn run_example4() -> i32 {
     let result = counter.lock();
     assert_eq!(4 * 1_000_000, *result);
     println!(
-        "Total 4: {}; locked state = {:?}; elapsed = {:.3?}",
+        "Total 4: {}; mutex state = {:?}; elapsed = {:.3?}",
         *result, result.mutex.state, elapsed
     );
 

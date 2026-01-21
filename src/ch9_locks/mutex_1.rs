@@ -7,7 +7,7 @@
 //!
 //! We use trivial conversions (`as u32`), as well as `into()`, because we implement the [`From`] trait for `u32`.
 //!
-//! Perhaps it could be faster to use plain integer values, but this is just an example anyway,
+//! Perhaps it would be faster to use plain integer values, but this is just an example anyway,
 //! and it follows the clean-code principles. Proper naming better conveys the purpose and use.
 //!
 //! If performance matters, it needs to be benchmarked on concrete platforms of interest (CPU + OS),
@@ -165,7 +165,7 @@ pub fn run_example2() -> i32 {
     let result = counter.lock();
     assert_eq!(4 * 1_000_000, *result);
     println!(
-        "Total 2: {}; guard state = {:?}; elapsed = {:.3?}",
+        "Total 2: {}; mutex state = {:?}; elapsed = {:.3?}",
         *result, result.mutex.state, elapsed
     );
 
@@ -219,7 +219,7 @@ pub fn run_example4() -> i32 {
     let result = counter.lock();
     assert_eq!(4 * 1_000_000, *result);
     println!(
-        "Total 4: {}; locked state = {:?}; elapsed = {:.3?}",
+        "Total 4: {}; mutex state = {:?}; elapsed = {:.3?}",
         *result, result.mutex.state, elapsed
     );
 
