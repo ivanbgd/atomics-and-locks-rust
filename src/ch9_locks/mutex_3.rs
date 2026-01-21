@@ -127,7 +127,7 @@ impl<T> Mutex<T> {
 
 #[derive(Debug)]
 pub struct MutexGuard<'a, T> {
-    mutex: &'a Mutex<T>,
+    pub(crate) mutex: &'a Mutex<T>,
 }
 
 unsafe impl<T: Send> Send for MutexGuard<'_, T> {}
