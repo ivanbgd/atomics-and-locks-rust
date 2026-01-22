@@ -12,6 +12,11 @@
 //! methods makes use of that by passing its value to a futex-like `wait()` function after unlocking the mutex.
 //! This way, the thread doesn't go to sleep if any notification signal arrived since unlocking the mutex,
 //! i.e., if the count has changed.
+//!
+//! It’s not unreasonable to argue that `Condvar::notify_all()`
+//! is fundamentally an antipattern not worth optimizing for.
+//! A condition variable’s purpose is to unlock a mutex and relock it when notified,
+//! so perhaps notifying more than one thread at once will never lead to anything good.
 
 use super::mutex_3::{Mutex, MutexGuard};
 use atomic_wait::{wait, wake_all, wake_one};
@@ -67,6 +72,7 @@ impl Condvar {
     }
 }
 
+/// A single writer and a single reader.
 pub fn run_example1() {
     let mutex = Mutex::new(0);
     let condvar = Condvar::new();
@@ -98,6 +104,7 @@ pub fn run_example1() {
     assert!(wakeups < 10);
 }
 
+/// Multiple writers (four) and multiple readers (four).
 pub fn run_example2() {
     let counter = Mutex::new(0);
     std::hint::black_box(&counter); // Doesn't affect performance (on Apple M2 Pro).
@@ -108,6 +115,7 @@ pub fn run_example2() {
     let start = Instant::now();
 
     thread::scope(|s| {
+        // Writer threads
         for _ in 0..4 {
             s.spawn(|| {
                 for _ in 0..1_000_000 {
@@ -117,6 +125,7 @@ pub fn run_example2() {
             });
         }
 
+        // Reader threads
         for _ in 0..4 {
             s.spawn(|| {
                 for _ in 0..1_000_000 {
@@ -129,15 +138,15 @@ pub fn run_example2() {
         }
     });
 
-    // 2.5 s on Apple M2 Pro
+    // 2.7 s on Apple M2 Pro
     let elapsed = start.elapsed();
 
     let result = counter.lock();
     assert_eq!(4 * 1_000_000, *result);
 
-    // Total 4: 4000000; mutex state = 1; condvar counter 4000000; elapsed = 2.552s
+    // Total: 4000000; mutex state = 1; condvar counter 4000000; elapsed = 2.719
     println!(
-        "Total 4: {}; mutex state = {:?}; condvar counter {}; elapsed = {:.3?}",
+        "Total: {}; mutex state = {:?}; condvar counter {}; elapsed = {:.3?}",
         *result,
         result.mutex.state,
         condvar.counter.into_inner(),

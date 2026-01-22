@@ -14,9 +14,10 @@
 //! Without optimization, the same code often results in many more instructions,
 //! which can hide the subtle effects of instruction reordering.
 
-use atomics_and_locks_rust::ch9_locks::condvar_2::*;
+use atomics_and_locks_rust::ch9_locks::rwlock_1::*;
 
 fn main() {
     run_example1();
     run_example2();
+    run_example3();
 }
