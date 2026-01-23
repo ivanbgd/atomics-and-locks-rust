@@ -22,6 +22,8 @@
 //! to bring the performance of write-locking and -unlocking near the performance of an efficient 3-state mutex.
 //!
 //! This implementation seems to be significantly faster than version 1, at least in [`run_example3()`].
+//! We get half the number of writer wake-ups as compared to version 2 of RwLock.
+//! This proves that writers are valued more equally with readers in this implementation than in previous ones.
 
 use atomic_wait::{wait, wake_all, wake_one};
 use std::cell::UnsafeCell;
@@ -229,14 +231,17 @@ pub fn run_example3() {
         }
     });
 
-    // 1.7 s on Apple M2 Pro.
+    // 1.6 s on Apple M2 Pro, but 1.4 s with three readers,
+    // 1.1 s with two readers, 1.0 s with a single reader, and 0.7 s with no readers.
+    // This is significantly faster than versions 1 and 2.
     let elapsed = start.elapsed();
 
     let result = counter.read_lock();
     assert_eq!(4 * 1_000_000, *result);
 
     // We only expect to have a single reader at this point, hence rwlock state = 2.
-    // Total: 4000000; rwlock state = 2, writer wake counter: 4019149; elapsed = 1.692s
+    // Total: 4000000; rwlock state = 2, writer wake counter: 4022776; elapsed = 1.610s
+    // This is half the number of writer wake-ups as compared to version 2 of RwLock.
     println!(
         "Total: {}; rwlock state = {:?}, writer wake counter: {:?}; elapsed = {:.3?}",
         *result, result.rwlock.state, result.rwlock.writer_wake_counter, elapsed,
