@@ -2,6 +2,8 @@
 //!
 //! https://marabos.nl/atomics/building-locks.html#reader-writer-lock
 //!
+//! Prioritizes readers over writers. This can lead to writer starvation.
+//!
 //! I've added an accompanying [`ReadCondvar`] to be able to test correctness of the implementation,
 //! and also to be able to compare it with mutex with condvar.
 //!
@@ -20,7 +22,7 @@ use std::time::{Duration, Instant};
 
 /// A special value to mark the state as write-locked.
 ///
-/// Maximum number of concurrent readers is one less than this.
+/// Maximum allowed number of concurrent readers is one less than this.
 const WRITE_LOCKED: u32 = u32::MAX;
 
 #[derive(Debug)]
@@ -70,6 +72,13 @@ impl<T> RwLock<T> {
             .state
             .compare_exchange(0, WRITE_LOCKED, Acquire, Relaxed)
         {
+            // If we have a lot of readers, they could change the state counter in rapid succession,
+            // so there's a high chance of `self.state` changing between the above CAS operation and
+            // the below wait operation in such cases, if the wait operation is directly implemented
+            // as a (relatively slow) syscall.
+            // This wait is implemented as a syscall, which is relatively slow.
+            // This might result in an accidental busy-waiting loop.
+            // There is room for improvement here, and we do it in the version 2.
             wait(&self.state, state);
         }
 
