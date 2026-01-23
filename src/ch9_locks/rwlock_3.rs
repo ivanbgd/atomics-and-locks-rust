@@ -1,16 +1,27 @@
-//! # Reader-Writer Lock: Avoiding Busy-Looping Writers
+//! # Reader-Writer Lock: Avoiding Writer Starvation
 //!
-//! https://marabos.nl/atomics/building-locks.html#avoiding-busy-looping-writers
+//! https://marabos.nl/atomics/building-locks.html#avoiding-writer-starvation
 //!
 //! A common use case for an RwLock is a situation with many frequent readers, but very few, often only one,
 //! infrequent writer. For example, one thread might be responsible for reading out some sensor input or
 //! periodically downloading some new data that many other threads need to use.
 //!
-//! Prioritizes readers over writers. This can lead to writer starvation.
+//! This implementation, version 3, is useful in cases in which we want writers
+//! to be more or less equal with readers in terms of priority.
 //!
-//! To avoid potential busy-waiting loop in `write_lock()` (see comments in
-//! [version 1](super::rwlock_1::RwLock::write_lock)), we introduce `writer_wake_counter` which we increment
-//! when a writer should be woken. We never decrement it.
+//! We don't let any new readers acquire the lock if there is at least one writer waiting on the `RwLock`,
+//! even if the lock is read-locked.
+//!
+//! This way, new readers have to wait for at least one writer to take its turn,
+//! At the same time, this also means that readers will have access to fresh data.
+//!
+//! For a reader-writer lock that’s optimized for the "frequent reading and infrequent writing" use case, this is
+//! quite acceptable, since write-locking (and therefore write-unlocking) happens infrequently.
+//!
+//! For a more general purpose reader-writer lock, however, it is definitely worth optimizing further,
+//! to bring the performance of write-locking and -unlocking near the performance of an efficient 3-state mutex.
+//!
+//! This implementation seems to be significantly faster than version 1, at least in [`run_example3()`].
 
 use atomic_wait::{wait, wake_all, wake_one};
 use std::cell::UnsafeCell;
@@ -29,7 +40,10 @@ const WRITE_LOCKED: u32 = u32::MAX;
 pub struct RwLock<T> {
     /// Data
     value: UnsafeCell<T>,
-    /// The number of readers or [`WRITE_LOCKED`] (`u32::MAX`) if write-locked. Zero means unlocked.
+    /// The number of read locks times two, plus one if there's a writer waiting.
+    /// [`WRITE_LOCKED`] (`u32::MAX`) if write-locked.
+    /// Zero means unlocked.
+    /// This means that readers may acquire the lock when the state is even, but need to block when odd.
     state: AtomicU32,
     /// Incremented to wake up writers. We *never* decrement it!
     writer_wake_counter: AtomicU32,
@@ -52,64 +66,65 @@ impl<T> RwLock<T> {
         let mut state = self.state.load(Relaxed);
 
         loop {
-            if state < WRITE_LOCKED {
-                assert!(state < WRITE_LOCKED - 1, "too many readers");
+            if state.is_multiple_of(2) {
+                assert!(state < WRITE_LOCKED - 2, "too many readers");
                 match self
                     .state
-                    .compare_exchange_weak(state, state + 1, Acquire, Relaxed)
+                    .compare_exchange_weak(state, state + 2, Acquire, Relaxed)
                 {
                     Ok(_) => return ReadGuard { rwlock: self },
                     Err(new_state) => state = new_state,
                 }
             }
 
-            if state == WRITE_LOCKED {
-                wait(&self.state, WRITE_LOCKED);
+            if !state.is_multiple_of(2) {
+                wait(&self.state, state);
                 state = self.state.load(Relaxed);
             }
         }
     }
 
     pub fn write_lock(&self) -> WriteGuard<'_, T> {
-        // The `write_lock()` method now needs to wait for the new atomic variable instead,
-        // which is `self.writer_wake_counter`.
-        // But, we first need to check if there are any readers that have the lock.
-        while self
-            .state
-            .compare_exchange(0, WRITE_LOCKED, Acquire, Relaxed)
-            .is_err()
-        {
-            // To make sure we don’t miss any notifications between seeing that the RwLock is read-locked
-            // and actually going to sleep, we’ll use a pattern similar to the one we used for implementing our
-            // condition variable: load the `writer_wake_counter` before checking whether we still want to sleep.
-            //
-            // We also want to re-check the "read" counter, `state`, to see if it has changed in the meantime,
-            // during this brief period.
-            // The "read" is under quotes because `state` can also denote the write-locked state.
+        let mut state = self.state.load(Relaxed);
+
+        loop {
+            // Try to lock if unlocked: completely unlocked (no readers or writers) or there's only one active reader
+            // (readers are blocked when state is odd, and this also means there are no writers).
+            if state <= 1 {
+                match self
+                    .state
+                    .compare_exchange(state, WRITE_LOCKED, Acquire, Relaxed)
+                {
+                    Ok(_) => return WriteGuard { rwlock: self },
+                    Err(new_state) => {
+                        state = new_state;
+                        continue;
+                    }
+                }
+            }
+
+            // Block new readers by making sure the updated state is odd.
+            if state.is_multiple_of(2) {
+                match self
+                    .state
+                    .compare_exchange(state, state + 1, Relaxed, Relaxed)
+                {
+                    Ok(_) => {}
+                    Err(new_state) => {
+                        state = new_state;
+                        continue;
+                    }
+                }
+            }
+
+            // Wait if it's still locked (if the lock hasn’t been unlocked in the meantime).
             let writer_wake_counter = self.writer_wake_counter.load(Acquire);
-            // Re-check `state` to see if there are still some active readers.
-            // If there aren't any active readers, we won't go to sleep (`wait()`), and we'll check `state`
-            // in the very next iteration of the `while` loop, to see if we can then write-lock.
-            // So, we check for readers (`state`) in two places: during the CAS operation and here.
-            //
-            // This clearly prioritizes readers over writers.
-            // This gives readers a chance to take over the lock (again).
-            if self.state.load(Relaxed) != 0 {
-                // Wait if the RwLock is still (read- and write-) locked, but only if there
-                // have been no wake signals since we last checked (just above).
-                // If `writer_wake_counter` has not changed, this means that no other thread has released the lock,
-                // and we have to wait.
-                // If `writer_wake_counter` has changed, this means that some other thread has released
-                // the write-lock and we don't have to wait. But, we'll re-check `state` in the very next iteration
-                // to see if there are new readers who acquired the lock.
-                // We have also re-checked that there still are some active readers holding the lock.
-                // `wait()` checks for the write-lock state only, but we generally check
-                // for both read- and write-locking in this `if` statement.
+            state = self.state.load(Relaxed);
+            if state >= 2 {
                 wait(&self.writer_wake_counter, writer_wake_counter);
+                state = self.state.load(Relaxed);
             }
         }
-
-        WriteGuard { rwlock: self }
     }
 }
 
@@ -120,7 +135,15 @@ pub struct ReadGuard<'a, T> {
 
 impl<T> Drop for ReadGuard<'_, T> {
     fn drop(&mut self) {
-        if self.rwlock.state.fetch_sub(1, Release) == 1 {
+        // Since we now track whether there are any waiting writers, read-unlocking can now skip
+        // the `wake_one()` call when it is unnecessary.
+        // If we decrement from 5 to 3, for example, that means that there is another writer holding the RwLock.
+
+        // Decrement the state by two to remove one read-lock.
+        if self.rwlock.state.fetch_sub(2, Release) == 3 {
+            // If we decremented from 3 to 1, that means that RwLock is now unlocked
+            // *and* there is a waiting writer, which we'll now wake up.
+
             // Signalize that a writer can be woken up.
             self.rwlock.writer_wake_counter.fetch_add(1, Release);
             // Wake up a waiting writer, if any.
@@ -146,6 +169,9 @@ pub struct WriteGuard<'a, T> {
 
 impl<T> Drop for WriteGuard<'_, T> {
     fn drop(&mut self) {
+        // While write-locked (a state of u32::MAX), we do not track any information on whether any thread is waiting.
+        // So, we have no new information to use for write-unlocking, which will remain identical
+
         // A writer must reset the `state` to zero to unlock,
         // after which it should wake either one waiting writer or all waiting readers.
         // We don’t know whether readers or writers are waiting, nor do we have a way to wake up
@@ -203,16 +229,14 @@ pub fn run_example3() {
         }
     });
 
-    // 2.9 s on Apple M2 Pro, but 2.4 s with three readers,
-    // 1.2 s with two readers, 1.3 s with a single reader, and 0.8 s with no readers.
-    // These aren't precise benchmarks, so speed is about the same as version 1.
+    // 1.7 s on Apple M2 Pro.
     let elapsed = start.elapsed();
 
     let result = counter.read_lock();
     assert_eq!(4 * 1_000_000, *result);
 
-    // We only expect to have a single reader at this point, hence rwlock state = 1.
-    // Total: 4000000; rwlock state = 1, writer wake counter: 7956079; elapsed = 2.931s
+    // We only expect to have a single reader at this point, hence rwlock state = 2.
+    // Total: 4000000; rwlock state = 2, writer wake counter: 4019149; elapsed = 1.692s
     println!(
         "Total: {}; rwlock state = {:?}, writer wake counter: {:?}; elapsed = {:.3?}",
         *result, result.rwlock.state, result.rwlock.writer_wake_counter, elapsed,

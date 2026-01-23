@@ -2,6 +2,10 @@
 //!
 //! https://marabos.nl/atomics/building-locks.html#reader-writer-lock
 //!
+//! A common use case for an RwLock is a situation with many frequent readers, but very few, often only one,
+//! infrequent writer. For example, one thread might be responsible for reading out some sensor input or
+//! periodically downloading some new data that many other threads need to use.
+//!
 //! Prioritizes readers over writers. This can lead to writer starvation.
 //!
 //! I've added an accompanying [`ReadCondvar`] to be able to test correctness of the implementation,
@@ -288,8 +292,6 @@ pub fn run_example2() {
 }
 
 /// Multiple writers (four) and multiple readers (four), without [`ReadCondvar`].
-///
-/// It doesn't make a difference whether we notify one or all waiting threads.
 pub fn run_example3() {
     let counter = RwLock::new(0);
     std::hint::black_box(&counter); // Doesn't affect performance (on Apple M2 Pro).

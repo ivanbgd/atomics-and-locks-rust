@@ -9,3 +9,4 @@ pub mod mutex_2;
 pub mod mutex_3;
 pub mod rwlock_1;
 pub mod rwlock_2;
+pub mod rwlock_3;
